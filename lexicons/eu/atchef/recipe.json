@@ -1,0 +1,48 @@
+{
+  "lexicon": 1,
+  "id": "eu.atchef.recipe",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "tid",
+      "record": {
+        "type": "object",
+        "required": ["name", "portions", "time", "content", "createdAt"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 640,
+            "maxGraphemes": 64,
+            "description": "Recipe title"
+          },
+          "portions": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Number of servings"
+          },
+          "time": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Total time in minutes"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 50000,
+            "maxGraphemes": 5000,
+            "description": "Recipe content in Cooklang format"
+          },
+          "image": {
+            "type": "blob",
+            "accept": ["image/png", "image/jpeg", "image/webp"],
+            "maxSize": 1000000,
+            "description": "Cover image"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime"
+          }
+        }
+      }
+    }
+  }
+}

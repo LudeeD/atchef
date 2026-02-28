@@ -11,3 +11,27 @@ serde =  { version = "1.0.228", features = ["derive"]}
 tokio =  { version = "1.49.0", features = ["full"]}
 tracing = "0.1.44"
 tracing-subscriber = {version = "0.3.22", features = ["env-filter"]}
+
+# OAuth dependencies
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+jsonwebtoken = "9"
+p256 = { version = "0.13", features = ["jwk"] }
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+tower-sessions = "0.14"
+tower-sessions-sqlx-store = { version = "0.15", features = ["sqlite"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+chrono = { version = "0.4", features = ["serde"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+urlencoding = "2"
+serde_json = "1"
+
+# Lexicon dependencies
+atrium-api = "0.24"
+ipld-core = "0.4"
+async-trait = "0.1"
+
+# Internal dependencies
+atproto-api = { path = "../atproto-api" }

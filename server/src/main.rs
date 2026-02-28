@@ -1,11 +1,25 @@
 use anyhow::Context;
-use axum::{Router, routing::get};
+use axum::{
+    routing::{get, post},
+    Router,
+};
+use tower_sessions::{SessionManagerLayer};
+use tower_sessions_sqlx_store::SqliteStore;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod handlers;
+#[allow(dead_code)]
+mod lexicons;
 mod models;
+mod oauth;
 mod views;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub http_client: reqwest::Client,
+    pub base_url: String,
+}
 
 #[tokio::main]
 async fn main() {
@@ -17,9 +31,49 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    // Create database in the server directory (where Cargo.toml is)
+    let db_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sessions.db");
+    let database_url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+    let sqlite_pool = sqlx::sqlite::SqlitePool::connect(&database_url)
+        .await
+        .context("failed to connect to SQLite session database")
+        .unwrap();
+    let session_store = SqliteStore::new(sqlite_pool);
+    session_store
+        .migrate()
+        .await
+        .context("failed to migrate session database")
+        .unwrap();
+    let session_layer = SessionManagerLayer::new(session_store)
+        .with_secure(false)
+        .with_same_site(tower_sessions::cookie::SameSite::Lax);
+
+    let state = AppState {
+        http_client: reqwest::Client::new(),
+        base_url: "http://127.0.0.1:3000".to_string(),
+    };
+
     let app = Router::new()
         .route("/", get(handlers::home))
-        .route("/recipe/{id}", get(handlers::recipe));
+        .route("/recipe/{id}", get(handlers::recipe))
+        .route(
+            "/recipe/new",
+            get(handlers::new_recipe_form).post(handlers::create_recipe),
+        )
+        .route(
+            "/login",
+            get(handlers::login_page_handler).post(handlers::login_start),
+        )
+        .route("/oauth/callback", get(handlers::oauth_callback))
+        .route("/logout", post(handlers::logout))
+        .route("/profile", get(handlers::profile))
+        .route("/client-metadata.json", get(handlers::client_metadata))
+        .route(
+            "/.well-known/oauth-client-metadata",
+            get(handlers::client_metadata),
+        )
+        .layer(session_layer)
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
         .await
