@@ -34,9 +34,8 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Create database in the server directory (where Cargo.toml is)
-    let db_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sessions.db");
-    let database_url = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+    let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "/data/sessions.db".to_string());
+    let database_url = format!("sqlite://{}?mode=rwc", db_path);
     let sqlite_pool = sqlx::sqlite::SqlitePool::connect(&database_url)
         .await
         .context("failed to connect to SQLite session database")
@@ -52,12 +51,16 @@ async fn main() {
         .context("failed to initialize recipe database")
         .unwrap();
     let session_layer = SessionManagerLayer::new(session_store)
-        .with_secure(false)
         .with_same_site(tower_sessions::cookie::SameSite::Lax);
+
+    let base_url = std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let secure_cookies = base_url.starts_with("https://");
+
+    let session_layer = session_layer.with_secure(secure_cookies);
 
     let state = AppState {
         http_client: reqwest::Client::new(),
-        base_url: "http://127.0.0.1:3000".to_string(),
+        base_url,
         sqlite_pool,
     };
 
@@ -85,11 +88,11 @@ async fn main() {
         .layer(session_layer)
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
         .await
         .context("failed to bind TcpListener")
         .unwrap();
 
-    info!("Starting server at http://127.0.0.1:3000");
+    info!("Starting server at 0.0.0.0:3000");
     axum::serve(listener, app).await.unwrap();
 }

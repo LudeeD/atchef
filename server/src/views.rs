@@ -280,61 +280,35 @@ fn render_comments(comments: &[Comment]) -> Markup {
     }
 }
 
-pub fn profile_page(user: &crate::oauth::AuthenticatedUser) -> Markup {
+
+pub fn public_profile_page(
+    handle: &str,
+    recipes: &[Recipe],
+    is_owner: bool,
+    display_name: Option<&str>,
+    description: Option<&str>,
+    avatar_url: Option<&str>,
+) -> Markup {
     html! {
-        h1 { "Your Profile" }
-
-        @if let Some(profile) = &user.profile {
-            @if let Some(display_name) = &profile.display_name {
-                dl {
-                    dt { "Display Name" }
-                    dd { (display_name) }
-                }
+        div style="display: flex; align-items: center; gap: 16px; margin-bottom: 8px;" {
+            @if let Some(url) = avatar_url {
+                img src=(url) alt="Avatar" style="width: 64px; height: 64px; border-radius: 50%; object-fit: cover;";
             }
-
-            @if let Some(description) = &profile.description {
-                dl {
-                    dt { "Bio" }
-                    dd { (description) }
-                }
-            }
-
-            @if let Some(avatar) = &profile.avatar {
-                dl {
-                    dt { "Avatar" }
-                    dd style="font-family: monospace; font-size: 12px; word-break: break-all;" {
-                        (format!("{:?}", avatar))
-                    }
-                }
-            }
-
-            @if let Some(banner) = &profile.banner {
-                dl {
-                    dt { "Banner" }
-                    dd style="font-family: monospace; font-size: 12px; word-break: break-all;" {
-                        (format!("{:?}", banner))
-                    }
+            div {
+                h1 style="margin: 0;" { (display_name.unwrap_or(handle)) }
+                @if display_name.is_some() {
+                    p class="meta" style="margin: 0;" { "@" (handle) }
                 }
             }
         }
-
-        dl {
-            dt { "Handle" }
-            dd { (&user.handle) }
-
-            dt { "DID" }
-            dd style="word-break: break-all;" { (&user.did) }
+        @if let Some(bio) = description {
+            p { (bio) }
         }
-
-        form method="post" action="/logout" style="margin-top: 20px;" {
-            button type="submit" { "Sign out" }
+        @if is_owner {
+            form method="post" action="/logout" style="margin-bottom: 20px;" {
+                button type="submit" { "Sign out" }
+            }
         }
-    }
-}
-
-pub fn public_profile_page(handle: &str, recipes: &[Recipe]) -> Markup {
-    html! {
-        h1 { (handle) }
         @if recipes.is_empty() {
             p class="meta" { "No recipes yet." }
         } @else {

@@ -12,7 +12,7 @@ use jsonwebtoken::jwk::Jwk;
 use crate::lexicons::eu::atchef::recipe::RecordData;
 use crate::models::{Recipe, RecipeDetail, ProfileRecord};
 use crate::oauth::{discovery, dpop, pkce, AuthenticatedUser, DpopSession, PendingAuth};
-use crate::views::{base_layout, base_layout_with_user, login_page, profile_page, recipe_form_page, recipe_list, recipe_page};
+use crate::views::{base_layout, base_layout_with_user, login_page, recipe_form_page, recipe_list, recipe_page};
 use crate::{AppState, db};
 
 const PENDING_AUTH_KEY: &str = "pending_auth";
@@ -199,10 +199,7 @@ pub async fn home(State(state): State<AppState>, session: Session) -> Markup {
 
 pub async fn profile(session: Session) -> Response {
     match session.get::<AuthenticatedUser>(USER_KEY).await {
-        Ok(Some(user)) => {
-            let content = profile_page(&user);
-            base_layout_with_user("Profile | AtChef", content, Some(&user.handle)).into_response()
-        }
+        Ok(Some(user)) => Redirect::to(&format!("/profile/{}", user.handle)).into_response(),
         _ => Redirect::to("/login").into_response(),
     }
 }
@@ -223,6 +220,11 @@ struct ListRecordsRecord {
 #[derive(Deserialize)]
 struct ListRecordsResponse {
     records: Vec<ListRecordsRecord>,
+}
+
+#[derive(Deserialize)]
+struct ProfileRecordResponse {
+    value: crate::models::ProfileRecord,
 }
 
 #[derive(Deserialize)]
@@ -322,10 +324,51 @@ pub async fn recipe(
 pub async fn public_profile(
     State(state): State<AppState>,
     Path(handle): Path<String>,
+    session: Session,
 ) -> Markup {
+    let viewer = session
+        .get::<AuthenticatedUser>(USER_KEY)
+        .await
+        .ok()
+        .flatten();
+    let is_owner = viewer
+        .as_ref()
+        .map(|u| u.handle == handle)
+        .unwrap_or(false);
+
     let result = async {
         let did = discovery::resolve_handle(&state.http_client, &handle).await?;
         let pds_url = discovery::get_pds_url(&state.http_client, &did).await?;
+
+        // Fetch profile record (best-effort)
+        let profile_url = format!(
+            "{}/xrpc/com.atproto.repo.getRecord?repo={}&collection=app.bsky.actor.profile&rkey=self",
+            pds_url.trim_end_matches('/'),
+            urlencoding::encode(&did),
+        );
+        let profile = if let Ok(resp) = state.http_client.get(&profile_url).send().await {
+            if resp.status().is_success() {
+                resp.json::<ProfileRecordResponse>().await.ok().map(|r| r.value)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let avatar_url = profile.as_ref().and_then(|p| p.avatar.as_ref()).and_then(|blob| {
+            blob.reference["$link"].as_str().map(|cid| {
+                format!(
+                    "{}/xrpc/com.atproto.sync.getBlob?did={}&cid={}",
+                    pds_url.trim_end_matches('/'),
+                    urlencoding::encode(&did),
+                    urlencoding::encode(cid),
+                )
+            })
+        });
+        let display_name = profile.as_ref().and_then(|p| p.display_name.clone());
+        let description = profile.as_ref().and_then(|p| p.description.clone());
+
         let url = format!(
             "{}/xrpc/com.atproto.repo.listRecords?repo={}&collection=eu.atchef.recipe",
             pds_url.trim_end_matches('/'),
@@ -338,9 +381,6 @@ pub async fn public_profile(
         let list: ListRecordsResponse = response.json().await?;
         let recipes = list.records.into_iter().map(|r| {
             let rkey = r.uri.split('/').last().unwrap_or("").to_string();
-            let _created_at = chrono::DateTime::parse_from_rfc3339(&r.value.created_at)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now());
             crate::models::Recipe {
                 id: rkey,
                 name: r.value.name,
@@ -349,14 +389,25 @@ pub async fn public_profile(
                 comment_count: 0,
             }
         }).collect::<Vec<_>>();
-        Ok(recipes)
+        Ok((recipes, display_name, description, avatar_url))
     }
     .await;
 
     match result {
-        Ok(recipes) => {
-            let content = crate::views::public_profile_page(&handle, &recipes);
-            base_layout(&format!("{} | AtChef", handle), content)
+        Ok((recipes, display_name, description, avatar_url)) => {
+            let content = crate::views::public_profile_page(
+                &handle,
+                &recipes,
+                is_owner,
+                display_name.as_deref(),
+                description.as_deref(),
+                avatar_url.as_deref(),
+            );
+            base_layout_with_user(
+                &format!("{} | AtChef", handle),
+                content,
+                viewer.as_ref().map(|u| u.handle.as_str()),
+            )
         }
         Err(e) => {
             tracing::error!("Failed to load profile {}: {}", handle, e);

@@ -1,0 +1,6 @@
+server/target/
+atproto-api/target/
+vibes/
+lexicons/
+*.md
+.git/
