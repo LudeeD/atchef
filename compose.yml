@@ -7,12 +7,3 @@ services:
       DATABASE_PATH: /data/sessions.db
     volumes:
       - atchef-data:/data
-    networks:
-      - caddy
-
-volumes:
-  atchef-data:
-
-networks:
-  caddy:
-    external: true
