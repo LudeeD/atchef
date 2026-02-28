@@ -1,3 +1,4 @@
+use crate::db::UserRow;
 use crate::models::{Comment, Recipe, RecipeDetail};
 use maud::{html, Markup, PreEscaped};
 
@@ -220,7 +221,7 @@ pub fn recipe_list(recipes: &[Recipe], user: Option<&crate::oauth::Authenticated
         @for recipe in recipes {
             div class="recipe-item" {
                 div class="recipe-title" {
-                    a href=(format!("/recipe/{}", recipe.id)) { (&recipe.name) }
+                    a href=(format!("/profile/{}/recipe/{}", recipe.author_handle, recipe.id)) { (&recipe.name) }
                 }
                 div class="recipe-meta" {
                     "by " (&recipe.author_handle) " · " (&recipe.time_ago) " · "
@@ -331,6 +332,25 @@ pub fn profile_page(user: &crate::oauth::AuthenticatedUser) -> Markup {
     }
 }
 
+pub fn public_profile_page(handle: &str, recipes: &[Recipe]) -> Markup {
+    html! {
+        h1 { (handle) }
+        @if recipes.is_empty() {
+            p class="meta" { "No recipes yet." }
+        } @else {
+            p class="meta" { (recipes.len()) " recipes" }
+            @for recipe in recipes {
+                div class="recipe-item" {
+                    div class="recipe-title" {
+                        a href=(format!("/profile/{}/recipe/{}", handle, recipe.id)) { (&recipe.name) }
+                    }
+                    div class="recipe-meta" { (&recipe.time_ago) }
+                }
+            }
+        }
+    }
+}
+
 pub fn login_page(error: Option<&str>) -> Markup {
     html! {
         h1 { "Sign in" }
@@ -410,6 +430,49 @@ pub fn recipe_form_page(error: Option<&str>) -> Markup {
         }
 
         script { (PreEscaped(RECIPE_FORM_JS)) }
+    }
+}
+
+pub fn chefs_page(users: &[UserRow]) -> Markup {
+    let count = users.len();
+    let chef_text = if count == 1 { "chef" } else { "chefs" };
+
+    html! {
+        h1 { "Chefs on AtChef" }
+        p class="meta" { (count) " " (chef_text) " on the platform" }
+
+        @if users.is_empty() {
+            p { "No chefs yet. " a href="/login" { "Sign in" } " to be the first!" }
+        }
+        @else {
+            ul class="chef-list" {
+                @for user in users {
+                    li class="chef-item" {
+                        a href=(format!("/profile/{}", user.handle)) { (user.handle) }
+                        span class="meta" { " · joined " (format_time_ago(&user.joined_at)) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn format_time_ago(dt: &chrono::DateTime<chrono::Utc>) -> String {
+    let now = chrono::Utc::now();
+    let duration = now.signed_duration_since(*dt);
+
+    if duration.num_seconds() < 60 {
+        "just now".to_string()
+    } else if duration.num_seconds() < 3600 {
+        format!("{} min ago", duration.num_minutes())
+    } else if duration.num_days() < 1 {
+        format!("{} hours ago", duration.num_hours())
+    } else if duration.num_days() < 30 {
+        format!("{} days ago", duration.num_days())
+    } else if duration.num_days() < 365 {
+        format!("{} months ago", duration.num_days() / 30)
+    } else {
+        format!("{} years ago", duration.num_days() / 365)
     }
 }
 

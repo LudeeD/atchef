@@ -10,10 +10,10 @@ use tower_sessions::Session;
 use jsonwebtoken::jwk::Jwk;
 
 use crate::lexicons::eu::atchef::recipe::RecordData;
-use crate::models::{get_mock_recipe_detail, get_mock_recipes, ProfileRecord};
+use crate::models::{Recipe, RecipeDetail, ProfileRecord};
 use crate::oauth::{discovery, dpop, pkce, AuthenticatedUser, DpopSession, PendingAuth};
 use crate::views::{base_layout, base_layout_with_user, login_page, profile_page, recipe_form_page, recipe_list, recipe_page};
-use crate::AppState;
+use crate::{AppState, db};
 
 const PENDING_AUTH_KEY: &str = "pending_auth";
 const USER_KEY: &str = "user";
@@ -180,8 +180,12 @@ async fn exchange_token(
     response.json().await.map_err(Into::into)
 }
 
-pub async fn home(session: Session) -> Markup {
-    let recipes = get_mock_recipes();
+pub async fn home(State(state): State<AppState>, session: Session) -> Markup {
+    let db_recipes = db::get_all_recipes(&state.sqlite_pool)
+        .await
+        .unwrap_or_default();
+    let recipes: Vec<Recipe> = db_recipes.iter().map(Recipe::from_db_row).collect();
+
     let user = session
         .get::<AuthenticatedUser>(USER_KEY)
         .await
@@ -203,20 +207,167 @@ pub async fn profile(session: Session) -> Response {
     }
 }
 
-pub async fn recipe(Path(id): Path<String>) -> Markup {
-    match get_mock_recipe_detail(&id) {
-        Some(recipe) => {
-            let content = recipe_page(&recipe);
-            base_layout(&format!("{} | AtChef", recipe.name), content)
+#[derive(Deserialize)]
+struct ListRecordsValue {
+    name: String,
+    #[serde(rename = "createdAt")]
+    created_at: String,
+}
+
+#[derive(Deserialize)]
+struct ListRecordsRecord {
+    uri: String,
+    value: ListRecordsValue,
+}
+
+#[derive(Deserialize)]
+struct ListRecordsResponse {
+    records: Vec<ListRecordsRecord>,
+}
+
+#[derive(Deserialize)]
+struct GetRecordValue {
+    name: String,
+    content: String,
+    portions: u64,
+    time: u64,
+    #[serde(rename = "createdAt")]
+    created_at: String,
+}
+
+#[derive(Deserialize)]
+struct GetRecordResponse {
+    value: GetRecordValue,
+}
+
+fn time_ago(created_at: &str) -> String {
+    let Ok(dt) = chrono::DateTime::parse_from_rfc3339(created_at) else {
+        return "recently".to_string();
+    };
+    let secs = (chrono::Utc::now() - dt.to_utc()).num_seconds();
+    match secs {
+        s if s < 60 => "just now".to_string(),
+        s if s < 3600 => format!("{} min ago", s / 60),
+        s if s < 86400 => format!("{} hours ago", s / 3600),
+        s => format!("{} days ago", s / 86400),
+    }
+}
+
+pub async fn recipe(
+    State(state): State<AppState>,
+    Path((handle, rkey)): Path<(String, String)>,
+) -> Markup {
+    let result = async {
+        let did = discovery::resolve_handle(&state.http_client, &handle).await?;
+        let pds_url = discovery::get_pds_url(&state.http_client, &did).await?;
+        let url = format!(
+            "{}/xrpc/com.atproto.repo.getRecord?repo={}&collection=eu.atchef.recipe&rkey={}",
+            pds_url.trim_end_matches('/'),
+            urlencoding::encode(&did),
+            urlencoding::encode(&rkey),
+        );
+        let response = state.http_client.get(&url).send().await?;
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("record not found: {}", response.status()));
         }
-        None => base_layout(
-            "Not Found | AtChef",
-            maud::html! {
-                h1 { "Recipe not found" }
-                p { "The recipe you're looking for doesn't exist." }
-                p { a href="/" { "Back to home" } }
-            },
-        ),
+        let record: GetRecordResponse = response.json().await?;
+
+        let recipe_detail = RecipeDetail {
+            id: rkey.clone(),
+            name: record.value.name,
+            content: record.value.content,
+            portions: record.value.portions as u32,
+            time: record.value.time as u32,
+            author_handle: handle.clone(),
+            time_ago: time_ago(&record.value.created_at),
+            comments: vec![],
+        };
+
+        let uri = format!("at://{}/eu.atchef.recipe/{}", did, rkey);
+        let _ = db::save_recipe(
+            &state.sqlite_pool,
+            &rkey,
+            &uri,
+            &did,
+            &handle,
+            &rkey,
+            &recipe_detail.name,
+            &record.value.created_at,
+        )
+        .await;
+
+        Ok(recipe_detail)
+    }
+    .await;
+
+    match result {
+        Ok(detail) => {
+            let content = recipe_page(&detail);
+            base_layout(&format!("{} | AtChef", detail.name), content)
+        }
+        Err(e) => {
+            tracing::error!("Failed to load recipe {}/{}: {}", handle, rkey, e);
+            base_layout(
+                "Not Found | AtChef",
+                maud::html! {
+                    h1 { "Recipe not found" }
+                    p { "The recipe you're looking for doesn't exist." }
+                    p { a href="/" { "Back to home" } }
+                },
+            )
+        }
+    }
+}
+
+pub async fn public_profile(
+    State(state): State<AppState>,
+    Path(handle): Path<String>,
+) -> Markup {
+    let result = async {
+        let did = discovery::resolve_handle(&state.http_client, &handle).await?;
+        let pds_url = discovery::get_pds_url(&state.http_client, &did).await?;
+        let url = format!(
+            "{}/xrpc/com.atproto.repo.listRecords?repo={}&collection=eu.atchef.recipe",
+            pds_url.trim_end_matches('/'),
+            urlencoding::encode(&did),
+        );
+        let response = state.http_client.get(&url).send().await?;
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("failed to list records: {}", response.status()));
+        }
+        let list: ListRecordsResponse = response.json().await?;
+        let recipes = list.records.into_iter().map(|r| {
+            let rkey = r.uri.split('/').last().unwrap_or("").to_string();
+            let _created_at = chrono::DateTime::parse_from_rfc3339(&r.value.created_at)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_else(|_| chrono::Utc::now());
+            crate::models::Recipe {
+                id: rkey,
+                name: r.value.name,
+                author_handle: handle.clone(),
+                time_ago: time_ago(&r.value.created_at),
+                comment_count: 0,
+            }
+        }).collect::<Vec<_>>();
+        Ok(recipes)
+    }
+    .await;
+
+    match result {
+        Ok(recipes) => {
+            let content = crate::views::public_profile_page(&handle, &recipes);
+            base_layout(&format!("{} | AtChef", handle), content)
+        }
+        Err(e) => {
+            tracing::error!("Failed to load profile {}: {}", handle, e);
+            base_layout(
+                "Not Found | AtChef",
+                maud::html! {
+                    h1 { "Profile not found" }
+                    p { a href="/" { "Back to home" } }
+                },
+            )
+        }
     }
 }
 
@@ -393,6 +544,11 @@ pub async fn oauth_callback(
             profile,
         };
 
+        // Track user in database
+        if let Err(e) = db::upsert_user(&state.sqlite_pool, &user.did, &user.handle).await {
+            tracing::error!("Failed to track user: {}", e);
+        }
+
         session.remove::<PendingAuth>(PENDING_AUTH_KEY).await.ok();
         session
             .insert(USER_KEY, user)
@@ -525,13 +681,16 @@ pub async fn create_recipe(
         );
         let agent = Agent::with_http_client(dpop_session, state.http_client.clone());
 
+        let created_at = atrium_api::types::string::Datetime::now();
+        let recipe_name = form.name.clone();
+        
         let record = RecordData {
             name: form.name,
             portions: std::num::NonZeroU64::new(form.portions.max(1)).unwrap(),
             time: std::num::NonZeroU64::new(form.time.max(1)).unwrap(),
             content: form.content,
             image: None,
-            created_at: atrium_api::types::string::Datetime::now(),
+            created_at: created_at.clone(),
         };
 
         let output = agent
@@ -539,15 +698,29 @@ pub async fn create_recipe(
             .create_record(&user.did, "eu.atchef.recipe", &record)
             .await?;
 
-        Ok::<_, anyhow::Error>(output)
+        Ok::<_, anyhow::Error>((output, created_at, recipe_name))
     }
     .await;
 
     match result {
-        Ok(output) => {
-            let uri = output.uri;
-            let rkey = uri.split('/').last().unwrap_or(&uri);
-            Redirect::to(&format!("/recipe/{}", rkey)).into_response()
+        Ok((output, created_at, recipe_name)) => {
+            let rkey = output.uri.split('/').last().unwrap_or("").to_string();
+            let uri = output.uri.clone();
+
+            if let Err(e) = db::save_recipe(
+                &state.sqlite_pool,
+                &rkey,
+                &uri,
+                &user.did,
+                &user.handle,
+                &rkey,
+                &recipe_name,
+                created_at.as_str(),
+            ).await {
+                tracing::error!("Failed to save recipe to database: {}", e);
+            }
+
+            Redirect::to(&format!("/profile/{}/recipe/{}", user.handle, rkey)).into_response()
         }
         Err(e) => {
             tracing::error!("Failed to create recipe: {}", e);
@@ -555,4 +728,20 @@ pub async fn create_recipe(
             base_layout_with_user("New Recipe | AtChef", content, Some(&user.handle)).into_response()
         }
     }
+}
+
+pub async fn chefs(State(state): State<AppState>, session: Session) -> Markup {
+    let users = db::get_all_users(&state.sqlite_pool)
+        .await
+        .unwrap_or_default();
+    
+    let user = session
+        .get::<AuthenticatedUser>(USER_KEY)
+        .await
+        .ok()
+        .flatten();
+    
+    let user_handle = user.map(|u| u.handle);
+    let content = crate::views::chefs_page(&users);
+    base_layout_with_user("Chefs | AtChef", content, user_handle.as_deref())
 }
