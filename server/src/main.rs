@@ -1,21 +1,21 @@
 use anyhow::Context;
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 use sqlx::SqlitePool;
-use tower_sessions::{SessionManagerLayer};
+use tower_sessions::SessionManagerLayer;
 use tower_sessions_sqlx_store::SqliteStore;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod db;
 mod handlers;
 #[allow(dead_code)]
 mod lexicons;
 mod models;
 mod oauth;
 mod views;
-mod db;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -34,7 +34,7 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "/data/sessions.db".to_string());
+    let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "sessions.db".to_string());
     let database_url = format!("sqlite://{}?mode=rwc", db_path);
     let sqlite_pool = sqlx::sqlite::SqlitePool::connect(&database_url)
         .await
@@ -47,13 +47,15 @@ async fn main() {
         .context("failed to migrate session database")
         .unwrap();
 
-    db::init_db(&sqlite_pool).await
+    db::init_db(&sqlite_pool)
+        .await
         .context("failed to initialize recipe database")
         .unwrap();
     let session_layer = SessionManagerLayer::new(session_store)
         .with_same_site(tower_sessions::cookie::SameSite::Lax);
 
-    let base_url = std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let base_url =
+        std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
     let secure_cookies = base_url.starts_with("https://");
 
     let session_layer = session_layer.with_secure(secure_cookies);

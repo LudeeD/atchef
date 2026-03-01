@@ -1,0 +1,3 @@
+- lexicon
+  - needs regestering under com.atproto.lexicon.schema 
+  - https://atproto.com/specs/lexicon#lexicon-publication-and-resolution

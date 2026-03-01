@@ -4,10 +4,11 @@
   "defs": {
     "main": {
       "type": "record",
+      "description": "A cooking recipe with ingredients, instructions, and metadata",
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["name", "portions", "time", "content", "createdAt"],
+        "required": ["name", "content", "createdAt"],
         "properties": {
           "name": {
             "type": "string",
@@ -27,8 +28,8 @@
           },
           "content": {
             "type": "string",
-            "maxLength": 50000,
-            "maxGraphemes": 5000,
+            "maxLength": 15000,
+            "maxGraphemes": 3000,
             "description": "Recipe content in Cooklang format"
           },
           "image": {
@@ -37,9 +38,31 @@
             "maxSize": 1000000,
             "description": "Cover image"
           },
+          "description": {
+            "type": "string",
+            "maxLength": 500,
+            "maxGraphemes": 200,
+            "description": "Brief recipe description or summary"
+          },
+          "prepTime": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Preparation time in minutes"
+          },
+          "cookTime": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Cooking time in minutes"
+          },
           "createdAt": {
             "type": "string",
-            "format": "datetime"
+            "format": "datetime",
+            "description": "When the recipe was created"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "When the recipe was last updated"
           }
         }
       }
