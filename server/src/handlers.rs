@@ -257,8 +257,10 @@ fn time_ago(created_at: &str) -> String {
 
 pub async fn recipe(
     State(state): State<AppState>,
+    session: Session,
     Path((handle, rkey)): Path<(String, String)>,
 ) -> Markup {
+    let user = session.get::<AuthenticatedUser>(USER_KEY).await.ok().flatten();
     let result = async {
         let did = discovery::resolve_handle(&state.http_client, &handle).await?;
         let pds_url = discovery::get_pds_url(&state.http_client, &did).await?;
@@ -305,7 +307,7 @@ pub async fn recipe(
     match result {
         Ok(detail) => {
             let content = recipe_page(&detail);
-            base_layout(&format!("{} | AtChef", detail.name), content)
+            base_layout_with_user(&format!("{} | AtChef", detail.name), content, user.as_ref().map(|u| u.handle.as_str()))
         }
         Err(e) => {
             tracing::error!("Failed to load recipe {}/{}: {}", handle, rkey, e);

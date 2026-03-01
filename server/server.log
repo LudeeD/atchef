@@ -1,0 +1,3 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.36s
+     Running `target/debug/atchef`
+[2m2026-03-01T11:03:31.651138Z[0m [32m INFO[0m [2matchef[0m[2m:[0m Starting server at 0.0.0.0:3000

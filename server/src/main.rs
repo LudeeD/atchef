@@ -36,6 +36,7 @@ async fn main() {
 
     let db_path = std::env::var("DATABASE_PATH").unwrap_or_else(|_| "sessions.db".to_string());
     let database_url = format!("sqlite://{}?mode=rwc", db_path);
+    info!("DATABASE_PATH: {}", db_path);
     let sqlite_pool = sqlx::sqlite::SqlitePool::connect(&database_url)
         .await
         .context("failed to connect to SQLite session database")
@@ -55,8 +56,10 @@ async fn main() {
         .with_same_site(tower_sessions::cookie::SameSite::Lax);
 
     let base_url =
-        std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
+        std::env::var("BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
     let secure_cookies = base_url.starts_with("https://");
+    info!("BASE_URL:      {}", base_url);
+    info!("Secure cookies: {}", secure_cookies);
 
     let session_layer = session_layer.with_secure(secure_cookies);
 
