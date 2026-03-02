@@ -21,6 +21,7 @@ mod views;
 pub struct AppState {
     pub http_client: reqwest::Client,
     pub base_url: String,
+    pub client_id: String,
     pub sqlite_pool: SqlitePool,
 }
 
@@ -58,7 +59,17 @@ async fn main() {
     let base_url =
         std::env::var("BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string());
     let secure_cookies = base_url.starts_with("https://");
+    let is_loopback = base_url.starts_with("http://localhost") || base_url.starts_with("http://127.0.0.1");
+    let client_id = if is_loopback {
+        format!(
+            "http://localhost?redirect_uri={}&scope=atproto",
+            urlencoding::encode(&format!("{}/oauth/callback", base_url)),
+        )
+    } else {
+        format!("{}/client-metadata.json", base_url)
+    };
     info!("BASE_URL:      {}", base_url);
+    info!("CLIENT_ID:     {}", client_id);
     info!("Secure cookies: {}", secure_cookies);
 
     let session_layer = session_layer.with_secure(secure_cookies);
@@ -66,6 +77,7 @@ async fn main() {
     let state = AppState {
         http_client: reqwest::Client::new(),
         base_url,
+        client_id,
         sqlite_pool,
     };
 

@@ -480,20 +480,41 @@ pub async fn login_start(
             .await
             .map_err(|e| anyhow::anyhow!("session error: {}", e))?;
 
+        let par_endpoint = as_metadata.pushed_authorization_request_endpoint
+            .ok_or_else(|| anyhow::anyhow!("authorization server does not support PAR"))?;
+
         let redirect_uri = format!("{}/oauth/callback", state.base_url);
-        // For localhost development, use the loopback client ID format with scope
-        let client_id = format!(
-            "http://localhost?scope={}&redirect_uri={}",
-            urlencoding::encode("atproto transition:generic"),
-            urlencoding::encode(&redirect_uri)
-        );
+
+        let par_response = state.http_client
+            .post(&par_endpoint)
+            .form(&[
+                ("response_type", "code"),
+                ("client_id", state.client_id.as_str()),
+                ("redirect_uri", redirect_uri.as_str()),
+                ("state", oauth_state.as_str()),
+                ("code_challenge", pkce.challenge.as_str()),
+                ("code_challenge_method", "S256"),
+                ("scope", "atproto"),
+                ("login_hint", handle.as_str()),
+            ])
+            .send()
+            .await?;
+
+        if !par_response.status().is_success() {
+            let status = par_response.status();
+            let body = par_response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("PAR request failed: {} - {}", status, body));
+        }
+
+        #[derive(Deserialize)]
+        struct PARResponse { request_uri: String }
+        let par_data: PARResponse = par_response.json().await?;
+
         let auth_url = format!(
-            "{}?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256&scope=atproto%20transition:generic",
+            "{}?client_id={}&request_uri={}",
             as_metadata.authorization_endpoint,
-            urlencoding::encode(&client_id),
-            urlencoding::encode(&redirect_uri),
-            urlencoding::encode(&oauth_state),
-            urlencoding::encode(&pkce.challenge),
+            urlencoding::encode(&state.client_id),
+            urlencoding::encode(&par_data.request_uri),
         );
 
         Ok::<_, anyhow::Error>(auth_url)
@@ -549,12 +570,6 @@ pub async fn oauth_callback(
         }
 
         let redirect_uri = format!("{}/oauth/callback", state.base_url);
-        // For localhost development, use the loopback client ID format with scope
-        let client_id = format!(
-            "http://localhost?scope={}&redirect_uri={}",
-            urlencoding::encode("atproto transition:generic"),
-            urlencoding::encode(&redirect_uri)
-        );
 
         // Token exchange with DPoP nonce handling
         let tokens = exchange_token(
@@ -562,7 +577,7 @@ pub async fn oauth_callback(
             &pending.token_endpoint,
             &pending.dpop_private_key_pem,
             &pending.dpop_public_jwk,
-            &client_id,
+            &state.client_id,
             &code,
             &redirect_uri,
             &pending.code_verifier,
@@ -651,13 +666,13 @@ pub struct ClientMetadata {
 
 pub async fn client_metadata(State(state): State<AppState>) -> Json<ClientMetadata> {
     Json(ClientMetadata {
-        client_id: state.base_url.clone(),
+        client_id: state.client_id.clone(),
         client_name: "AtChef".to_string(),
         client_uri: state.base_url.clone(),
         redirect_uris: vec![format!("{}/oauth/callback", state.base_url)],
         grant_types: vec!["authorization_code".to_string(), "refresh_token".to_string()],
         response_types: vec!["code".to_string()],
-        scope: "atproto transition:generic".to_string(),
+        scope: "atproto".to_string(),
         token_endpoint_auth_method: "none".to_string(),
         application_type: "web".to_string(),
         dpop_bound_access_tokens: true,
@@ -706,7 +721,7 @@ pub async fn create_recipe(
                     &metadata.token_endpoint,
                     &user.dpop_private_key_pem,
                     &user.dpop_public_jwk,
-                    &state.base_url,
+                    &state.client_id,
                     refresh_token,
                 ).await?;
 
