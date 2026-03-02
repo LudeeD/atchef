@@ -42,6 +42,9 @@ pub struct RecipeDetail {
     pub author_handle: String,
     pub time_ago: String,
     pub comments: Vec<Comment>,
+    pub description: Option<String>,
+    pub prep_time: Option<u32>,
+    pub cook_time: Option<u32>,
 }
 
 #[allow(dead_code)]

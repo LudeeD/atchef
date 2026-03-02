@@ -21,7 +21,9 @@ const CSS: &str = r#"
   --color-accent-text: #ffffff;
   --color-error: #8b0000;             /* was #b44 - 7.2:1 contrast */
   --color-ingredient: #228833;        /* was #2a6 - improved contrast */
+  --color-ingredient-bg: #eaf4ea;
   --color-equipment: #996677;         /* was #a67 - improved contrast */
+  --color-equipment-bg: #f5eef2;
   --color-timer: #4477aa;            /* was #67a - improved contrast */
   --color-timer-bg: #e8f0ff;         /* was #eef - cleaner */
   --color-code-bg: #eeeeee;          /* was #f0f0f0 */
@@ -44,7 +46,9 @@ const CSS: &str = r#"
   --color-accent-text: #0a0a0a;
   --color-error: #ff6b6b;             /* 4.8:1 contrast */
   --color-ingredient: #55cc66;        /* bright green for dark bg */
+  --color-ingredient-bg: #162516;
   --color-equipment: #cc88aa;         /* bright purple for dark bg */
+  --color-equipment-bg: #251622;
   --color-timer: #66aadd;            /* bright blue for dark bg */
   --color-timer-bg: #1a2a3a;         /* dark blue bg */
   --color-code-bg: #1a1a1a;          /* dark code background */
@@ -97,41 +101,99 @@ header {
   margin-top: 2px; 
 }
 
-h1 { 
-  font-size: 24px; 
-  font-weight: 600; 
-  margin-bottom: 5px; 
+h1 {
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: 6px;
+  line-height: 1.2;
 }
-.meta { 
-  font-size: 14px; 
-  color: var(--color-text-secondary); 
-  margin-bottom: 20px; 
+.meta {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  margin-bottom: 20px;
 }
-.description { 
-  margin-bottom: 20px; 
+.description {
+  margin-bottom: 20px;
+  font-size: 15px;
+  color: var(--color-text-secondary);
 }
-.info { 
-  font-size: 14px; 
-  color: var(--color-text-secondary); 
-  margin-bottom: 25px; 
+.recipe-info-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-bottom: 28px;
+  font-size: 14px;
+}
+.recipe-info-item {
+  color: var(--color-text-meta);
+}
+.recipe-info-item strong {
+  color: var(--color-text-primary);
+  font-weight: 600;
 }
 
-h2 { 
-  font-size: 16px; 
-  font-weight: 600; 
-  margin: 25px 0 10px; 
+h2 {
+  font-size: 13px;
+  font-weight: 700;
+  margin: 30px 0 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--color-text-meta);
 }
-ul, ol { 
-  margin-left: 20px; 
+ul, ol {
+  margin-left: 20px;
 }
-li { 
-  margin-bottom: 8px; 
+li {
+  margin-bottom: 8px;
 }
 
-.comments { 
-  margin-top: 40px; 
-  border-top: 1px solid var(--color-border-subtle); 
-  padding-top: 20px; 
+.comments {
+  margin-top: 40px;
+  border-top: 1px solid var(--color-border-subtle);
+  padding-top: 20px;
+}
+
+.recipe-columns {
+  display: flex;
+  gap: 36px;
+  align-items: flex-start;
+}
+#recipe-ingredients {
+  flex: 0 0 170px;
+  font-size: 14px;
+}
+#recipe-ingredients h2:first-child {
+  margin-top: 0;
+}
+#recipe-ingredients ul {
+  margin: 0 0 15px 20px;
+}
+#recipe-ingredients li {
+  margin-bottom: 4px;
+}
+.recipe-instructions {
+  flex: 1;
+  min-width: 0;
+}
+.recipe-instructions h2:first-child {
+  margin-top: 0;
+}
+@media (max-width: 480px) {
+  .recipe-columns {
+    flex-direction: column;
+    gap: 0;
+  }
+  #recipe-ingredients {
+    flex: none;
+    width: 100%;
+  }
+}
+#recipe-content p {
+  margin: 0 0 10px 0;
 }
 .comment { 
   margin-bottom: 15px; 
@@ -313,17 +375,25 @@ dd {
   margin-bottom: 4px; 
 }
 
-.ingredient { 
-  color: var(--color-ingredient); 
-  font-weight: 500; 
+.ingredient {
+  color: var(--color-ingredient);
+  background: var(--color-ingredient-bg);
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 14px;
 }
 .ingredient .amount { 
   color: var(--color-text-secondary); 
   font-weight: normal; 
 }
-.equipment { 
-  color: var(--color-equipment); 
-  font-weight: 500; 
+.equipment {
+  color: var(--color-equipment);
+  background: var(--color-equipment-bg);
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 14px;
 }
 .timer { 
   color: var(--color-timer); 
@@ -624,22 +694,70 @@ pub fn recipe_list(recipes: &[Recipe], user: Option<&crate::oauth::Authenticated
 }
 
 pub fn recipe_page(recipe: &RecipeDetail) -> Markup {
+    let (rendered_content, ingredients, equipment) =
+        parse_and_render_cooklang(&recipe.content);
+
     html! {
         h1 { (&recipe.name) }
         div class="meta" {
             "by " (&recipe.author_handle) " · " (&recipe.time_ago)
         }
 
-        div class="info" {
-            (recipe.time) " min · " (recipe.portions) " servings"
+        @if let Some(desc) = &recipe.description {
+            p class="description" { (desc) }
         }
 
-        div class="content" {
-            @for line in recipe.content.lines() {
-                @if line.is_empty() {
-                    br;
-                } @else {
-                    p { (line) }
+        div class="recipe-info-bar" {
+            @match (recipe.prep_time, recipe.cook_time) {
+                (Some(prep), Some(cook)) => {
+                    span class="recipe-info-item" { "Prep " strong { (prep) " min" } }
+                    span class="recipe-info-item" { "Cook " strong { (cook) " min" } }
+                }
+                (Some(prep), None) => {
+                    span class="recipe-info-item" { "Prep " strong { (prep) " min" } }
+                }
+                (None, Some(cook)) => {
+                    span class="recipe-info-item" { "Cook " strong { (cook) " min" } }
+                }
+                (None, None) => {
+                    span class="recipe-info-item" { "Time " strong { (recipe.time) " min" } }
+                }
+            }
+            span class="recipe-info-item" { "Serves " strong { (recipe.portions) } }
+        }
+
+        div class="recipe-columns" {
+            @if !ingredients.is_empty() || !equipment.is_empty() {
+                div id="recipe-ingredients" {
+                    @if !ingredients.is_empty() {
+                        h2 { "Ingredients" }
+                        ul {
+                            @for (name, qty) in &ingredients {
+                                li {
+                                    (name)
+                                    @if !qty.is_empty() {
+                                        " "
+                                        span class="amount" { (qty) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    @if !equipment.is_empty() {
+                        h2 { "Equipment" }
+                        ul {
+                            @for item in &equipment {
+                                li { (item) }
+                            }
+                        }
+                    }
+                }
+            }
+
+            div class="recipe-instructions" {
+                h2 { "Instructions" }
+                div id="recipe-content" {
+                    (rendered_content)
                 }
             }
         }
@@ -1036,3 +1154,128 @@ document.addEventListener('DOMContentLoaded', function() {
     updatePreview();
 });
 "#;
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+// Parse and render cooklang content.
+// Returns (rendered HTML, ingredient list (name, qty_str), equipment list).
+fn parse_and_render_cooklang(
+    content: &str,
+) -> (PreEscaped<String>, Vec<(String, String)>, Vec<String>) {
+    use cooklang::model::{Content, Item};
+
+    let (recipe, _) = match cooklang::parse(content).into_result() {
+        Ok(r) => r,
+        Err(_) => {
+            // Fallback: plain text
+            let mut html = String::new();
+            for line in content.lines() {
+                if line.trim().is_empty() {
+                    html.push_str("<br>");
+                } else {
+                    html.push_str("<p>");
+                    html.push_str(&html_escape(line));
+                    html.push_str("</p>");
+                }
+            }
+            return (PreEscaped(html), vec![], vec![]);
+        }
+    };
+
+    let mut html = String::new();
+    for section in &recipe.sections {
+        for content_item in &section.content {
+            match content_item {
+                Content::Step(step) => {
+                    html.push_str("<p>");
+                    for item in &step.items {
+                        match item {
+                            Item::Text { value } => html.push_str(&html_escape(value)),
+                            Item::Ingredient { index } => {
+                                let ing = &recipe.ingredients[*index];
+                                let name = ing.alias.as_deref().unwrap_or(&ing.name);
+                                let display = match &ing.quantity {
+                                    Some(qty) => format!(
+                                        "{} <span class=\"amount\">{}</span>",
+                                        html_escape(name),
+                                        html_escape(&format!("{qty}"))
+                                    ),
+                                    None => html_escape(name),
+                                };
+                                html.push_str(&format!(
+                                    "<span class=\"ingredient\">{display}</span>"
+                                ));
+                            }
+                            Item::Cookware { index } => {
+                                let cw = &recipe.cookware[*index];
+                                let name = cw.alias.as_deref().unwrap_or(&cw.name);
+                                html.push_str(&format!(
+                                    "<span class=\"equipment\">{}</span>",
+                                    html_escape(name)
+                                ));
+                            }
+                            Item::Timer { index } => {
+                                let timer = &recipe.timers[*index];
+                                let display = match (&timer.quantity, &timer.name) {
+                                    (Some(qty), _) => format!("{qty}"),
+                                    (None, Some(name)) => name.clone(),
+                                    (None, None) => String::new(),
+                                };
+                                html.push_str(&format!(
+                                    "<span class=\"timer\">⏱ {}</span>",
+                                    html_escape(&display)
+                                ));
+                            }
+                            Item::InlineQuantity { index } => {
+                                let qty = &recipe.inline_quantities[*index];
+                                html.push_str(&html_escape(&format!("{qty}")));
+                            }
+                        }
+                    }
+                    html.push_str("</p>");
+                }
+                Content::Text(text) => {
+                    for line in text.lines() {
+                        if line.trim().is_empty() {
+                            html.push_str("<br>");
+                        } else {
+                            html.push_str("<p>");
+                            html.push_str(&html_escape(line));
+                            html.push_str("</p>");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Ingredients list: only definitions (skip re-uses of same ingredient)
+    let mut ingredients: Vec<(String, String)> = Vec::new();
+    let mut equipment: Vec<String> = Vec::new();
+
+    for ing in &recipe.ingredients {
+        if ing.relation.is_definition() {
+            let name = ing.alias.as_deref().unwrap_or(&ing.name).to_string();
+            let qty_str = ing
+                .quantity
+                .as_ref()
+                .map(|q| format!("{q}"))
+                .unwrap_or_default();
+            ingredients.push((name, qty_str));
+        }
+    }
+
+    for cw in &recipe.cookware {
+        use cooklang::model::ComponentRelation;
+        if matches!(cw.relation, ComponentRelation::Definition { .. }) {
+            equipment.push(cw.alias.as_deref().unwrap_or(&cw.name).to_string());
+        }
+    }
+
+    (PreEscaped(html), ingredients, equipment)
+}

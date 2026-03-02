@@ -33,5 +33,7 @@ atrium-api = "0.24"
 ipld-core = "0.4"
 async-trait = "0.1"
 
+cooklang = "0.17.2"
+
 # Internal dependencies
 atproto-api = { path = "../atproto-api" }

@@ -35,6 +35,9 @@ pub async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
     let _ = sqlx::query("ALTER TABLE recipes ADD COLUMN content TEXT").execute(pool).await;
     let _ = sqlx::query("ALTER TABLE recipes ADD COLUMN portions INTEGER").execute(pool).await;
     let _ = sqlx::query("ALTER TABLE recipes ADD COLUMN time INTEGER").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE recipes ADD COLUMN description TEXT").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE recipes ADD COLUMN prep_time INTEGER").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE recipes ADD COLUMN cook_time INTEGER").execute(pool).await;
 
     Ok(())
 }
@@ -51,11 +54,14 @@ pub async fn save_recipe(
     portions: u32,
     time: u32,
     created_at: &str,
+    description: Option<&str>,
+    prep_time: Option<u32>,
+    cook_time: Option<u32>,
 ) -> anyhow::Result<()> {
     sqlx::query(
         r#"
-        INSERT OR REPLACE INTO recipes (id, uri, author_did, author_handle, rkey, name, content, portions, time, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO recipes (id, uri, author_did, author_handle, rkey, name, content, portions, time, created_at, description, prep_time, cook_time)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(id)
@@ -68,6 +74,9 @@ pub async fn save_recipe(
     .bind(portions)
     .bind(time)
     .bind(created_at)
+    .bind(description)
+    .bind(prep_time)
+    .bind(cook_time)
     .execute(pool)
     .await?;
 
@@ -83,6 +92,9 @@ struct SqliteRecipeDetailRow {
     portions: i64,
     time: i64,
     created_at: String,
+    description: Option<String>,
+    prep_time: Option<i64>,
+    cook_time: Option<i64>,
 }
 
 pub struct RecipeDetailRow {
@@ -93,12 +105,15 @@ pub struct RecipeDetailRow {
     pub portions: u32,
     pub time: u32,
     pub created_at: DateTime<Utc>,
+    pub description: Option<String>,
+    pub prep_time: Option<u32>,
+    pub cook_time: Option<u32>,
 }
 
 pub async fn get_recipe(pool: &SqlitePool, author_handle: &str, rkey: &str) -> anyhow::Result<Option<RecipeDetailRow>> {
     let row = sqlx::query_as::<_, SqliteRecipeDetailRow>(
         r#"
-        SELECT rkey, author_handle, name, content, portions, time, created_at
+        SELECT rkey, author_handle, name, content, portions, time, created_at, description, prep_time, cook_time
         FROM recipes
         WHERE author_handle = ? AND rkey = ? AND content IS NOT NULL
         "#,
@@ -118,6 +133,9 @@ pub async fn get_recipe(pool: &SqlitePool, author_handle: &str, rkey: &str) -> a
         created_at: DateTime::parse_from_rfc3339(&r.created_at)
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now()),
+        description: r.description,
+        prep_time: r.prep_time.map(|v| v as u32),
+        cook_time: r.cook_time.map(|v| v as u32),
     }))
 }
 

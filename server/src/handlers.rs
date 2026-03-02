@@ -235,6 +235,11 @@ struct GetRecordValue {
     time: u64,
     #[serde(rename = "createdAt")]
     created_at: String,
+    description: Option<String>,
+    #[serde(rename = "prepTime")]
+    prep_time: Option<u64>,
+    #[serde(rename = "cookTime")]
+    cook_time: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -273,6 +278,9 @@ pub async fn recipe(
                 author_handle: row.author_handle,
                 time_ago: time_ago(&row.created_at.to_rfc3339()),
                 comments: vec![],
+                description: row.description,
+                prep_time: row.prep_time,
+                cook_time: row.cook_time,
             });
         }
 
@@ -299,6 +307,9 @@ pub async fn recipe(
             author_handle: handle.clone(),
             time_ago: time_ago(&record.value.created_at),
             comments: vec![],
+            description: record.value.description.clone(),
+            prep_time: record.value.prep_time.map(|v| v as u32),
+            cook_time: record.value.cook_time.map(|v| v as u32),
         };
 
         let uri = format!("at://{}/eu.atchef.recipe/{}", did, rkey);
@@ -314,6 +325,9 @@ pub async fn recipe(
             recipe_detail.portions,
             recipe_detail.time,
             &record.value.created_at,
+            recipe_detail.description.as_deref(),
+            recipe_detail.prep_time,
+            recipe_detail.cook_time,
         )
         .await;
 
@@ -793,12 +807,12 @@ pub async fn create_recipe(
             .create_record(&user.did, "eu.atchef.recipe", &record)
             .await?;
 
-        Ok::<_, anyhow::Error>((output, created_at, recipe_name, record.content, portions as u32, time as u32))
+        Ok::<_, anyhow::Error>((output, created_at, recipe_name, record.content, portions as u32, time as u32, record.description, record.prep_time, record.cook_time))
     }
     .await;
 
     match result {
-        Ok((output, created_at, recipe_name, content, portions, time)) => {
+        Ok((output, created_at, recipe_name, content, portions, time, description, prep_time, cook_time)) => {
             let rkey = output.uri.split('/').last().unwrap_or("").to_string();
             let uri = output.uri.clone();
 
@@ -814,6 +828,9 @@ pub async fn create_recipe(
                 portions,
                 time,
                 created_at.as_str(),
+                description.as_deref(),
+                prep_time.map(|v| v as u32),
+                cook_time.map(|v| v as u32),
             ).await {
                 tracing::error!("Failed to save recipe to database: {}", e);
             }
