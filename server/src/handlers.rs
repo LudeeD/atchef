@@ -262,6 +262,20 @@ pub async fn recipe(
 ) -> Markup {
     let user = session.get::<AuthenticatedUser>(USER_KEY).await.ok().flatten();
     let result = async {
+        // Cache-first: try DB before hitting PDS
+        if let Ok(Some(row)) = db::get_recipe(&state.sqlite_pool, &handle, &rkey).await {
+            return Ok(RecipeDetail {
+                id: row.rkey.clone(),
+                name: row.name,
+                content: row.content,
+                portions: row.portions,
+                time: row.time,
+                author_handle: row.author_handle,
+                time_ago: time_ago(&row.created_at.to_rfc3339()),
+                comments: vec![],
+            });
+        }
+
         let did = discovery::resolve_handle(&state.http_client, &handle).await?;
         let pds_url = discovery::get_pds_url(&state.http_client, &did).await?;
         let url = format!(
@@ -278,8 +292,8 @@ pub async fn recipe(
 
         let recipe_detail = RecipeDetail {
             id: rkey.clone(),
-            name: record.value.name,
-            content: record.value.content,
+            name: record.value.name.clone(),
+            content: record.value.content.clone(),
             portions: record.value.portions as u32,
             time: record.value.time as u32,
             author_handle: handle.clone(),
@@ -296,6 +310,9 @@ pub async fn recipe(
             &handle,
             &rkey,
             &recipe_detail.name,
+            &recipe_detail.content,
+            recipe_detail.portions,
+            recipe_detail.time,
             &record.value.created_at,
         )
         .await;
@@ -682,8 +699,10 @@ pub async fn client_metadata(State(state): State<AppState>) -> Json<ClientMetada
 #[derive(Deserialize)]
 pub struct RecipeForm {
     name: String,
+    description: String,
     portions: u64,
-    time: u64,
+    prep_time: u64,
+    cook_time: u64,
     content: String,
 }
 
@@ -751,11 +770,19 @@ pub async fn create_recipe(
 
         let created_at = atrium_api::types::string::Datetime::now();
         let recipe_name = form.name.clone();
-        
+
+        let portions = form.portions.max(1);
+        let time = (form.prep_time + form.cook_time).max(1);
+        let description = if form.description.trim().is_empty() { None } else { Some(form.description.trim().to_string()) };
+        let prep_time = if form.prep_time > 0 { Some(form.prep_time) } else { None };
+        let cook_time = if form.cook_time > 0 { Some(form.cook_time) } else { None };
         let record = RecordData {
             name: form.name,
-            portions: std::num::NonZeroU64::new(form.portions.max(1)).unwrap(),
-            time: std::num::NonZeroU64::new(form.time.max(1)).unwrap(),
+            description,
+            portions: std::num::NonZeroU64::new(portions).unwrap(),
+            time: std::num::NonZeroU64::new(time).unwrap(),
+            prep_time,
+            cook_time,
             content: form.content,
             image: None,
             created_at: created_at.clone(),
@@ -766,12 +793,12 @@ pub async fn create_recipe(
             .create_record(&user.did, "eu.atchef.recipe", &record)
             .await?;
 
-        Ok::<_, anyhow::Error>((output, created_at, recipe_name))
+        Ok::<_, anyhow::Error>((output, created_at, recipe_name, record.content, portions as u32, time as u32))
     }
     .await;
 
     match result {
-        Ok((output, created_at, recipe_name)) => {
+        Ok((output, created_at, recipe_name, content, portions, time)) => {
             let rkey = output.uri.split('/').last().unwrap_or("").to_string();
             let uri = output.uri.clone();
 
@@ -783,6 +810,9 @@ pub async fn create_recipe(
                 &user.handle,
                 &rkey,
                 &recipe_name,
+                &content,
+                portions,
+                time,
                 created_at.as_str(),
             ).await {
                 tracing::error!("Failed to save recipe to database: {}", e);

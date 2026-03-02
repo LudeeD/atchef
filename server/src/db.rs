@@ -31,6 +31,11 @@ pub async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
+    // Migrations: add new columns (ignore error if already exist)
+    let _ = sqlx::query("ALTER TABLE recipes ADD COLUMN content TEXT").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE recipes ADD COLUMN portions INTEGER").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE recipes ADD COLUMN time INTEGER").execute(pool).await;
+
     Ok(())
 }
 
@@ -42,12 +47,15 @@ pub async fn save_recipe(
     author_handle: &str,
     rkey: &str,
     name: &str,
+    content: &str,
+    portions: u32,
+    time: u32,
     created_at: &str,
 ) -> anyhow::Result<()> {
     sqlx::query(
         r#"
-        INSERT INTO recipes (id, uri, author_did, author_handle, rkey, name, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO recipes (id, uri, author_did, author_handle, rkey, name, content, portions, time, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(id)
@@ -56,11 +64,61 @@ pub async fn save_recipe(
     .bind(author_handle)
     .bind(rkey)
     .bind(name)
+    .bind(content)
+    .bind(portions)
+    .bind(time)
     .bind(created_at)
     .execute(pool)
     .await?;
 
     Ok(())
+}
+
+#[derive(sqlx::FromRow)]
+struct SqliteRecipeDetailRow {
+    rkey: String,
+    author_handle: String,
+    name: String,
+    content: String,
+    portions: i64,
+    time: i64,
+    created_at: String,
+}
+
+pub struct RecipeDetailRow {
+    pub rkey: String,
+    pub author_handle: String,
+    pub name: String,
+    pub content: String,
+    pub portions: u32,
+    pub time: u32,
+    pub created_at: DateTime<Utc>,
+}
+
+pub async fn get_recipe(pool: &SqlitePool, author_handle: &str, rkey: &str) -> anyhow::Result<Option<RecipeDetailRow>> {
+    let row = sqlx::query_as::<_, SqliteRecipeDetailRow>(
+        r#"
+        SELECT rkey, author_handle, name, content, portions, time, created_at
+        FROM recipes
+        WHERE author_handle = ? AND rkey = ? AND content IS NOT NULL
+        "#,
+    )
+    .bind(author_handle)
+    .bind(rkey)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r| RecipeDetailRow {
+        rkey: r.rkey,
+        author_handle: r.author_handle,
+        name: r.name,
+        content: r.content,
+        portions: r.portions as u32,
+        time: r.time as u32,
+        created_at: DateTime::parse_from_rfc3339(&r.created_at)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
+    }))
 }
 
 pub async fn get_all_recipes(pool: &SqlitePool) -> anyhow::Result<Vec<RecipeRow>> {

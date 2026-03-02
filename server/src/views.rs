@@ -782,14 +782,23 @@ pub fn recipe_form_page(error: Option<&str>) -> Markup {
                 input type="text" id="name" name="name" placeholder="e.g., Perfect Sourdough Bread" required;
             }
 
+            div class="form-group" {
+                label for="description" { "Description" }
+                textarea id="description" name="description" rows="2" placeholder="A brief description of this recipe..." style="min-height: auto;" {}
+            }
+
             div class="form-row" {
                 div class="form-group" {
                     label for="portions" { "Servings" }
                     input type="number" id="portions" name="portions" min="1" value="4" required;
                 }
                 div class="form-group" {
-                    label for="time" { "Time (minutes)" }
-                    input type="number" id="time" name="time" min="1" value="45" required;
+                    label for="prep_time" { "Prep (min)" }
+                    input type="number" id="prep_time" name="prep_time" min="0" value="15" required;
+                }
+                div class="form-group" {
+                    label for="cook_time" { "Cook (min)" }
+                    input type="number" id="cook_time" name="cook_time" min="0" value="30" required;
                 }
             }
 

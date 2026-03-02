@@ -6,7 +6,13 @@ use atrium_api::types::TryFromUnknown;
 pub struct RecordData {
     ///Recipe content in Cooklang format
     pub content: String,
+    ///Cooking time in minutes
+    #[serde(skip_serializing_if = "core::option::Option::is_none")]
+    pub cook_time: core::option::Option<u64>,
     pub created_at: atrium_api::types::string::Datetime,
+    ///Brief recipe description or summary
+    #[serde(skip_serializing_if = "core::option::Option::is_none")]
+    pub description: core::option::Option<String>,
     ///Cover image
     #[serde(skip_serializing_if = "core::option::Option::is_none")]
     pub image: core::option::Option<atrium_api::types::BlobRef>,
@@ -14,6 +20,9 @@ pub struct RecordData {
     pub name: String,
     ///Number of servings
     pub portions: core::num::NonZeroU64,
+    ///Preparation time in minutes
+    #[serde(skip_serializing_if = "core::option::Option::is_none")]
+    pub prep_time: core::option::Option<u64>,
     ///Total time in minutes
     pub time: core::num::NonZeroU64,
 }
