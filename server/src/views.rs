@@ -157,40 +157,37 @@ li {
   padding-top: 20px;
 }
 
-.recipe-columns {
+#recipe-ingredients {
   display: flex;
   gap: 36px;
-  align-items: flex-start;
-}
-#recipe-ingredients {
-  flex: 0 0 170px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
   font-size: 14px;
 }
-#recipe-ingredients h2:first-child {
+.ing-group {
+  flex: 1;
+  min-width: 120px;
+}
+.ing-group h2 {
   margin-top: 0;
 }
 #recipe-ingredients ul {
-  margin: 0 0 15px 20px;
+  margin: 0 0 0 20px;
 }
 #recipe-ingredients li {
   margin-bottom: 4px;
+  cursor: default;
 }
-.recipe-instructions {
-  flex: 1;
-  min-width: 0;
+#recipe-ingredients li[data-ingredient] {
+  cursor: pointer;
 }
-.recipe-instructions h2:first-child {
-  margin-top: 0;
+#recipe-ingredients li.ing-active {
+  color: var(--color-ingredient);
+  font-weight: 600;
 }
-@media (max-width: 480px) {
-  .recipe-columns {
-    flex-direction: column;
-    gap: 0;
-  }
-  #recipe-ingredients {
-    flex: none;
-    width: 100%;
-  }
+.ingredient.ing-active {
+  outline: 2px solid var(--color-ingredient);
+  outline-offset: 1px;
 }
 #recipe-content p {
   margin: 0 0 10px 0;
@@ -726,14 +723,14 @@ pub fn recipe_page(recipe: &RecipeDetail) -> Markup {
             span class="recipe-info-item" { "Serves " strong { (recipe.portions) } }
         }
 
-        div class="recipe-columns" {
-            @if !ingredients.is_empty() || !equipment.is_empty() {
-                div id="recipe-ingredients" {
-                    @if !ingredients.is_empty() {
+        @if !ingredients.is_empty() || !equipment.is_empty() {
+            div id="recipe-ingredients" {
+                @if !ingredients.is_empty() {
+                    div class="ing-group" {
                         h2 { "Ingredients" }
                         ul {
                             @for (name, qty) in &ingredients {
-                                li {
+                                li data-ingredient=(name.to_lowercase()) {
                                     (name)
                                     @if !qty.is_empty() {
                                         " "
@@ -743,7 +740,9 @@ pub fn recipe_page(recipe: &RecipeDetail) -> Markup {
                             }
                         }
                     }
-                    @if !equipment.is_empty() {
+                }
+                @if !equipment.is_empty() {
+                    div class="ing-group" {
                         h2 { "Equipment" }
                         ul {
                             @for item in &equipment {
@@ -753,13 +752,11 @@ pub fn recipe_page(recipe: &RecipeDetail) -> Markup {
                     }
                 }
             }
+        }
 
-            div class="recipe-instructions" {
-                h2 { "Instructions" }
-                div id="recipe-content" {
-                    (rendered_content)
-                }
-            }
+        h2 { "Instructions" }
+        div id="recipe-content" {
+            (rendered_content)
         }
 
         @if !recipe.comments.is_empty() {
@@ -768,6 +765,21 @@ pub fn recipe_page(recipe: &RecipeDetail) -> Markup {
                 (render_comments(&recipe.comments))
             }
         }
+
+        script { (PreEscaped(r#"
+document.querySelectorAll('#recipe-ingredients li[data-ingredient]').forEach(function(li) {
+  var key = li.getAttribute('data-ingredient');
+  var spans = document.querySelectorAll('.ingredient[data-ingredient="' + key + '"]');
+  li.addEventListener('mouseenter', function() {
+    li.classList.add('ing-active');
+    spans.forEach(function(s) { s.classList.add('ing-active'); });
+  });
+  li.addEventListener('mouseleave', function() {
+    li.classList.remove('ing-active');
+    spans.forEach(function(s) { s.classList.remove('ing-active'); });
+  });
+});
+        "#)) }
     }
 }
 
@@ -1199,6 +1211,7 @@ fn parse_and_render_cooklang(
                             Item::Ingredient { index } => {
                                 let ing = &recipe.ingredients[*index];
                                 let name = ing.alias.as_deref().unwrap_or(&ing.name);
+                                let key = html_escape(&name.to_lowercase());
                                 let display = match &ing.quantity {
                                     Some(qty) => format!(
                                         "{} <span class=\"amount\">{}</span>",
@@ -1208,7 +1221,7 @@ fn parse_and_render_cooklang(
                                     None => html_escape(name),
                                 };
                                 html.push_str(&format!(
-                                    "<span class=\"ingredient\">{display}</span>"
+                                    "<span class=\"ingredient\" data-ingredient=\"{key}\">{display}</span>"
                                 ));
                             }
                             Item::Cookware { index } => {
