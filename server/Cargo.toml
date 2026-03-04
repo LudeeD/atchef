@@ -34,6 +34,8 @@ ipld-core = "0.4"
 async-trait = "0.1"
 
 cooklang = "0.17.2"
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
 
 # Internal dependencies
 atproto-api = { path = "../atproto-api" }

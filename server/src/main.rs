@@ -15,6 +15,7 @@ mod handlers;
 mod lexicons;
 mod models;
 mod oauth;
+mod sync;
 mod views;
 
 #[derive(Clone)]
@@ -62,7 +63,7 @@ async fn main() {
     let is_loopback = base_url.starts_with("http://localhost") || base_url.starts_with("http://127.0.0.1");
     let client_id = if is_loopback {
         format!(
-            "http://localhost?redirect_uri={}&scope=atproto",
+            "http://localhost?redirect_uri={}&scope=atproto%20transition%3Ageneric",
             urlencoding::encode(&format!("{}/oauth/callback", base_url)),
         )
     } else {
@@ -80,6 +81,8 @@ async fn main() {
         client_id,
         sqlite_pool,
     };
+
+    tokio::spawn(sync::run(state.http_client.clone(), state.sqlite_pool.clone()));
 
     let app = Router::new()
         .route("/", get(handlers::home))

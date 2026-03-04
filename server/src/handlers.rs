@@ -315,7 +315,6 @@ pub async fn recipe(
         let uri = format!("at://{}/eu.atchef.recipe/{}", did, rkey);
         let _ = db::save_recipe(
             &state.sqlite_pool,
-            &rkey,
             &uri,
             &did,
             &handle,
@@ -525,7 +524,7 @@ pub async fn login_start(
                 ("state", oauth_state.as_str()),
                 ("code_challenge", pkce.challenge.as_str()),
                 ("code_challenge_method", "S256"),
-                ("scope", "atproto"),
+                ("scope", "atproto transition:generic"),
                 ("login_hint", handle.as_str()),
             ])
             .send()
@@ -703,7 +702,7 @@ pub async fn client_metadata(State(state): State<AppState>) -> Json<ClientMetada
         redirect_uris: vec![format!("{}/oauth/callback", state.base_url)],
         grant_types: vec!["authorization_code".to_string(), "refresh_token".to_string()],
         response_types: vec!["code".to_string()],
-        scope: "atproto".to_string(),
+        scope: "atproto transition:generic".to_string(),
         token_endpoint_auth_method: "none".to_string(),
         application_type: "web".to_string(),
         dpop_bound_access_tokens: true,
@@ -818,7 +817,6 @@ pub async fn create_recipe(
 
             if let Err(e) = db::save_recipe(
                 &state.sqlite_pool,
-                &rkey,
                 &uri,
                 &user.did,
                 &user.handle,

@@ -15,6 +15,8 @@ struct DidDocument {
     #[allow(dead_code)]
     id: String,
     service: Option<Vec<DidService>>,
+    #[serde(rename = "alsoKnownAs")]
+    also_known_as: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,6 +66,17 @@ pub async fn resolve_handle(client: &reqwest::Client, handle: &str) -> Result<St
 
     let data: ResolveHandleResponse = response.json().await.context("failed to parse response")?;
     Ok(data.did)
+}
+
+/// Resolve a DID to a handle via the DID document's alsoKnownAs field
+pub async fn resolve_did_to_handle(client: &reqwest::Client, did: &str) -> Result<String> {
+    let doc = fetch_did_document(client, did).await?;
+    let also_known_as = doc.also_known_as.ok_or_else(|| anyhow!("no alsoKnownAs in DID document"))?;
+    let at_uri = also_known_as.into_iter().next().ok_or_else(|| anyhow!("alsoKnownAs is empty"))?;
+    at_uri
+        .strip_prefix("at://")
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow!("alsoKnownAs entry is not an at:// URI: {}", at_uri))
 }
 
 /// Get the PDS URL from a DID document

@@ -2,16 +2,31 @@ use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 
 pub async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
+    // Migrate old schema (had synthetic 'id' PK) → drop and recreate with composite PK
+    let has_old_schema = sqlx::query("SELECT id FROM recipes LIMIT 0")
+        .execute(pool)
+        .await
+        .is_ok();
+    if has_old_schema {
+        sqlx::query("DROP TABLE recipes").execute(pool).await?;
+    }
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS recipes (
-            id TEXT PRIMARY KEY,
-            uri TEXT NOT NULL,
             author_did TEXT NOT NULL,
-            author_handle TEXT NOT NULL,
             rkey TEXT NOT NULL,
+            uri TEXT NOT NULL,
+            author_handle TEXT NOT NULL,
             name TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            content TEXT,
+            portions INTEGER,
+            time INTEGER,
+            created_at TEXT NOT NULL,
+            description TEXT,
+            prep_time INTEGER,
+            cook_time INTEGER,
+            PRIMARY KEY (author_did, rkey)
         )
         "#,
     )
@@ -31,20 +46,43 @@ pub async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
 
-    // Migrations: add new columns (ignore error if already exist)
-    let _ = sqlx::query("ALTER TABLE recipes ADD COLUMN content TEXT").execute(pool).await;
-    let _ = sqlx::query("ALTER TABLE recipes ADD COLUMN portions INTEGER").execute(pool).await;
-    let _ = sqlx::query("ALTER TABLE recipes ADD COLUMN time INTEGER").execute(pool).await;
-    let _ = sqlx::query("ALTER TABLE recipes ADD COLUMN description TEXT").execute(pool).await;
-    let _ = sqlx::query("ALTER TABLE recipes ADD COLUMN prep_time INTEGER").execute(pool).await;
-    let _ = sqlx::query("ALTER TABLE recipes ADD COLUMN cook_time INTEGER").execute(pool).await;
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS sync_cursor (id INTEGER PRIMARY KEY, cursor INTEGER)
+        "#,
+    )
+    .execute(pool)
+    .await?;
 
+    Ok(())
+}
+
+pub async fn get_cursor(pool: &SqlitePool) -> anyhow::Result<Option<i64>> {
+    let row: Option<(i64,)> = sqlx::query_as("SELECT cursor FROM sync_cursor WHERE id = 1")
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|(c,)| c))
+}
+
+pub async fn save_cursor(pool: &SqlitePool, cursor: i64) -> anyhow::Result<()> {
+    sqlx::query("INSERT OR REPLACE INTO sync_cursor (id, cursor) VALUES (1, ?)")
+        .bind(cursor)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn delete_recipe(pool: &SqlitePool, rkey: &str, author_did: &str) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM recipes WHERE rkey = ? AND author_did = ?")
+        .bind(rkey)
+        .bind(author_did)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
 pub async fn save_recipe(
     pool: &SqlitePool,
-    id: &str,
     uri: &str,
     author_did: &str,
     author_handle: &str,
@@ -60,15 +98,25 @@ pub async fn save_recipe(
 ) -> anyhow::Result<()> {
     sqlx::query(
         r#"
-        INSERT OR REPLACE INTO recipes (id, uri, author_did, author_handle, rkey, name, content, portions, time, created_at, description, prep_time, cook_time)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO recipes (author_did, rkey, uri, author_handle, name, content, portions, time, created_at, description, prep_time, cook_time)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(author_did, rkey) DO UPDATE SET
+            uri = excluded.uri,
+            author_handle = excluded.author_handle,
+            name = excluded.name,
+            content = excluded.content,
+            portions = excluded.portions,
+            time = excluded.time,
+            created_at = excluded.created_at,
+            description = excluded.description,
+            prep_time = excluded.prep_time,
+            cook_time = excluded.cook_time
         "#,
     )
-    .bind(id)
-    .bind(uri)
     .bind(author_did)
-    .bind(author_handle)
     .bind(rkey)
+    .bind(uri)
+    .bind(author_handle)
     .bind(name)
     .bind(content)
     .bind(portions)
