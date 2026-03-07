@@ -184,7 +184,12 @@ pub async fn home(State(state): State<AppState>, session: Session) -> Markup {
     let db_recipes = db::get_all_recipes(&state.sqlite_pool)
         .await
         .unwrap_or_default();
-    let recipes: Vec<Recipe> = db_recipes.iter().map(Recipe::from_db_row).collect();
+    
+    let mut recipes = Vec::new();
+    for row in &db_recipes {
+        let author_info = crate::models::AuthorInfo::basic(row.author_handle.clone());
+        recipes.push(Recipe::from_db_row(row, author_info));
+    }
 
     let user = session
         .get::<AuthenticatedUser>(USER_KEY)
@@ -269,13 +274,15 @@ pub async fn recipe(
     let result = async {
         // Cache-first: try DB before hitting PDS
         if let Ok(Some(row)) = db::get_recipe(&state.sqlite_pool, &handle, &rkey).await {
+            let author_info = crate::models::AuthorInfo::basic(row.author_handle.clone());
+            
             return Ok(RecipeDetail {
                 id: row.rkey.clone(),
                 name: row.name,
                 content: row.content,
                 portions: row.portions,
                 time: row.time,
-                author_handle: row.author_handle,
+                author: author_info,
                 time_ago: time_ago(&row.created_at.to_rfc3339()),
                 comments: vec![],
                 description: row.description,
@@ -298,13 +305,15 @@ pub async fn recipe(
         }
         let record: GetRecordResponse = response.json().await?;
 
+        let author_info = crate::models::AuthorInfo::basic(handle.clone());
+        
         let recipe_detail = RecipeDetail {
             id: rkey.clone(),
             name: record.value.name.clone(),
             content: record.value.content.clone(),
             portions: record.value.portions as u32,
             time: record.value.time as u32,
-            author_handle: handle.clone(),
+            author: author_info,
             time_ago: time_ago(&record.value.created_at),
             comments: vec![],
             description: record.value.description.clone(),
@@ -413,20 +422,22 @@ pub async fn public_profile(
         let list: ListRecordsResponse = response.json().await?;
         let recipes = list.records.into_iter().map(|r| {
             let rkey = r.uri.split('/').last().unwrap_or("").to_string();
+            let author_info = crate::models::AuthorInfo::basic(handle.clone());
             crate::models::Recipe {
                 id: rkey,
                 name: r.value.name,
-                author_handle: handle.clone(),
+                author: author_info,
                 time_ago: time_ago(&r.value.created_at),
                 comment_count: 0,
             }
         }).collect::<Vec<_>>();
-        Ok((recipes, display_name, description, avatar_url))
+        let is_member = db::is_atchef_member(&state.sqlite_pool, &did).await.unwrap_or(false);
+        Ok((recipes, display_name, description, avatar_url, is_member))
     }
     .await;
 
     match result {
-        Ok((recipes, display_name, description, avatar_url)) => {
+        Ok((recipes, display_name, description, avatar_url, is_member)) => {
             let content = crate::views::public_profile_page(
                 &handle,
                 &recipes,
@@ -434,6 +445,7 @@ pub async fn public_profile(
                 display_name.as_deref(),
                 description.as_deref(),
                 avatar_url.as_deref(),
+                is_member,
             );
             base_layout_with_user(
                 &format!("{} | AtChef", handle),

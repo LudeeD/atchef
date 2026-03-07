@@ -286,3 +286,14 @@ impl From<SqliteUserRow> for UserRow {
         }
     }
 }
+
+/// Check if a user is an AtChef member (has logged in at least once)
+pub async fn is_atchef_member(pool: &SqlitePool, did: &str) -> anyhow::Result<bool> {
+    let result = sqlx::query_scalar::<_, String>("SELECT did FROM users WHERE did = ?")
+        .bind(did)
+        .fetch_optional(pool)
+        .await?;
+    Ok(result.is_some())
+}
+
+

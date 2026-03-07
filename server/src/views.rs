@@ -1,5 +1,5 @@
 use crate::db::UserRow;
-use crate::models::{Comment, Recipe, RecipeDetail};
+use crate::models::{AuthorInfo, Comment, Recipe, RecipeDetail};
 use maud::{html, Markup, PreEscaped};
 
 const CSS: &str = r#"
@@ -178,8 +178,9 @@ li {
   margin-bottom: 4px;
   cursor: default;
 }
-#recipe-ingredients li[data-ingredient] {
+#recipe-ingredients .ingredient-text {
   cursor: pointer;
+  display: inline-block;
 }
 #recipe-ingredients li.ing-active {
   color: var(--color-ingredient);
@@ -399,6 +400,7 @@ dd {
   border-radius: 3px; 
   font-size: 14px; 
 }
+
 
 /* Create Recipe Button */
 .create-recipe-btn { 
@@ -668,7 +670,7 @@ pub fn recipe_list(recipes: &[Recipe], user: Option<&crate::oauth::Authenticated
         } @else {
             div class="welcome-card" style="display: flex; justify-content: space-between; align-items: center;" {
                 div {
-                    a href="/login" { "Log in" } " to set your status!"
+                    a href="/login" { "Log in" } " to create and share recipes!"
                 }
                 a href="/login" class="create-recipe-btn" {
                     "Log in"
@@ -679,10 +681,10 @@ pub fn recipe_list(recipes: &[Recipe], user: Option<&crate::oauth::Authenticated
         @for recipe in recipes {
             div class="recipe-item" {
                 div class="recipe-title" {
-                    a href=(format!("/profile/{}/recipe/{}", recipe.author_handle, recipe.id)) { (&recipe.name) }
+                    a href=(format!("/profile/{}/recipe/{}", recipe.author.handle, recipe.id)) { (&recipe.name) }
                 }
                 div class="recipe-meta" {
-                    "by " (&recipe.author_handle) " · " (&recipe.time_ago) " · "
+                    "by " (render_author_link(&recipe.author)) " · " (&recipe.time_ago) " · "
                     (recipe.comment_count) " comments"
                 }
             }
@@ -691,13 +693,12 @@ pub fn recipe_list(recipes: &[Recipe], user: Option<&crate::oauth::Authenticated
 }
 
 pub fn recipe_page(recipe: &RecipeDetail) -> Markup {
-    let (rendered_content, ingredients, equipment) =
-        parse_and_render_cooklang(&recipe.content);
+    let (rendered_content, ingredients, equipment) = parse_and_render_cooklang(&recipe.content);
 
     html! {
         h1 { (&recipe.name) }
         div class="meta" {
-            "by " (&recipe.author_handle) " · " (&recipe.time_ago)
+            "by " (render_author_link(&recipe.author)) " · " (&recipe.time_ago)
         }
 
         @if let Some(desc) = &recipe.description {
@@ -731,10 +732,12 @@ pub fn recipe_page(recipe: &RecipeDetail) -> Markup {
                         ul {
                             @for (name, qty) in &ingredients {
                                 li data-ingredient=(name.to_lowercase()) {
-                                    (name)
-                                    @if !qty.is_empty() {
-                                        " "
-                                        span class="amount" { (qty) }
+                                    span class="ingredient-text" {
+                                        (name)
+                                        @if !qty.is_empty() {
+                                            " "
+                                            span class="amount" { (qty) }
+                                        }
                                     }
                                 }
                             }
@@ -770,11 +773,13 @@ pub fn recipe_page(recipe: &RecipeDetail) -> Markup {
 document.querySelectorAll('#recipe-ingredients li[data-ingredient]').forEach(function(li) {
   var key = li.getAttribute('data-ingredient');
   var spans = document.querySelectorAll('.ingredient[data-ingredient="' + key + '"]');
-  li.addEventListener('mouseenter', function() {
+  var ingredientText = li.querySelector('.ingredient-text');
+  
+  ingredientText.addEventListener('mouseenter', function() {
     li.classList.add('ing-active');
     spans.forEach(function(s) { s.classList.add('ing-active'); });
   });
-  li.addEventListener('mouseleave', function() {
+  ingredientText.addEventListener('mouseleave', function() {
     li.classList.remove('ing-active');
     spans.forEach(function(s) { s.classList.remove('ing-active'); });
   });
@@ -783,12 +788,20 @@ document.querySelectorAll('#recipe-ingredients li[data-ingredient]').forEach(fun
     }
 }
 
+fn render_author_link(author: &AuthorInfo) -> Markup {
+    html! {
+        a href=(format!("/profile/{}", author.handle)) {
+            (author.handle)
+        }
+    }
+}
+
 fn render_comments(comments: &[Comment]) -> Markup {
     html! {
         @for comment in comments {
             div class="comment" {
                 div class="comment-meta" {
-                    (&comment.author_handle) " · " (&comment.time_ago)
+                    (render_author_link(&comment.author)) " · " (&comment.time_ago)
                 }
                 div class="comment-text" { (&comment.text) }
                 @if !comment.children.is_empty() {
@@ -808,6 +821,7 @@ pub fn public_profile_page(
     display_name: Option<&str>,
     description: Option<&str>,
     avatar_url: Option<&str>,
+    is_atchef_member: bool,
 ) -> Markup {
     html! {
         div style="display: flex; align-items: center; gap: 16px; margin-bottom: 8px;" {
@@ -818,6 +832,13 @@ pub fn public_profile_page(
                 h1 style="margin: 0;" { (display_name.unwrap_or(handle)) }
                 @if display_name.is_some() {
                     p class="meta" style="margin: 0;" { "@" (handle) }
+                }
+                @if is_atchef_member {
+                    div style="margin-top: 8px;" {
+                        span style="font-size: 14px; color: var(--color-text-secondary);" {
+                            "👨‍🍳 Certified Chef"
+                        }
+                    }
                 }
             }
         }
