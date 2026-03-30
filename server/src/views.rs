@@ -95,11 +95,26 @@ header {
 .recipe-title { 
   font-size: 17px; 
 }
-.recipe-meta { 
-  font-size: 14px; 
-  color: var(--color-text-secondary); 
-  margin-top: 2px; 
+.recipe-meta {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  margin-top: 2px;
 }
+.recipe-action {
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  font-size: 13px;
+}
+.recipe-action:hover { text-decoration: underline; }
+.recipe-action-delete {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+.recipe-action-delete:hover { color: #c0392b; text-decoration: underline; }
 
 h1 {
   font-size: 28px;
@@ -130,6 +145,7 @@ h1 {
 }
 .recipe-info-item {
   color: var(--color-text-meta);
+  white-space: nowrap;
 }
 .recipe-info-item strong {
   color: var(--color-text-primary);
@@ -172,11 +188,24 @@ li {
   margin-top: 0;
 }
 #recipe-ingredients ul {
-  margin: 0 0 0 20px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 24px;
 }
 #recipe-ingredients li {
   margin-bottom: 4px;
   cursor: default;
+  padding-left: 12px;
+  position: relative;
+}
+#recipe-ingredients li::before {
+  content: "•";
+  position: absolute;
+  left: 0;
+  color: var(--color-text-muted, #888);
 }
 #recipe-ingredients .ingredient-text {
   cursor: pointer;
@@ -193,6 +222,17 @@ li {
 #recipe-content p {
   margin: 0 0 10px 0;
 }
+
+.recipe-image {
+  width: 100%;
+  max-width: 800px;
+  height: auto;
+  margin: 2rem auto;
+  display: block;
+  border-radius: 8px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
 .comment { 
   margin-bottom: 15px; 
 }
@@ -308,6 +348,46 @@ dd {
   font-size: 12px; 
 }
 
+.form-note {
+  font-weight: normal;
+  font-size: 13px;
+  color: var(--color-text-meta);
+}
+
+.image-preview {
+  margin-top: 10px;
+  position: relative;
+  display: inline-block;
+}
+
+.image-preview img {
+  max-width: 200px;
+  max-height: 200px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+}
+
+.remove-image-btn {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  background: var(--color-error);
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.remove-image-btn:hover {
+  background: #a00000;
+}
+
 .form-actions { 
   display: flex; 
   gap: 15px; 
@@ -393,13 +473,18 @@ dd {
   border-radius: 3px;
   font-size: 14px;
 }
-.timer { 
-  color: var(--color-timer); 
-  background: var(--color-timer-bg); 
-  padding: 2px 6px; 
-  border-radius: 3px; 
-  font-size: 14px; 
+.timer {
+  color: var(--color-timer);
+  background: var(--color-timer-bg);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 14px;
+  white-space: nowrap;
 }
+.timer[data-seconds] { cursor: pointer; }
+.timer[data-seconds]:hover { filter: brightness(0.9); }
+.timer.timer-running { outline: 2px solid var(--color-timer); }
+.timer.timer-done { background: #d4edda; color: #155724; outline: none; }
 
 
 /* Create Recipe Button */
@@ -664,6 +749,7 @@ pub fn recipe_list(recipes: &[Recipe], user: Option<&crate::oauth::Authenticated
                     }
                     div style="display: flex; gap: 10px;" {
                         a href="/recipe/new" class="create-recipe-btn" { "+ New Recipe" }
+                        button id="random-recipe-btn" class="create-recipe-btn" style="background:var(--color-surface);color:var(--color-text-primary);border:1px solid var(--color-border-subtle);" { "🎲 Random" }
                     }
                 }
             }
@@ -684,11 +770,22 @@ pub fn recipe_list(recipes: &[Recipe], user: Option<&crate::oauth::Authenticated
                     a href=(format!("/profile/{}/recipe/{}", recipe.author.handle, recipe.id)) { (&recipe.name) }
                 }
                 div class="recipe-meta" {
-                    "by " (render_author_link(&recipe.author)) " · " (&recipe.time_ago) " · "
-                    (recipe.comment_count) " comments"
+                    "by " (render_author_link(&recipe.author)) " · " (&recipe.time_ago)
                 }
             }
         }
+
+        script { (PreEscaped(r#"
+var btn = document.getElementById('random-recipe-btn');
+if (btn) {
+  btn.addEventListener('click', function() {
+    var links = Array.from(document.querySelectorAll('.recipe-item .recipe-title a'));
+    if (links.length === 0) return;
+    var pick = links[Math.floor(Math.random() * links.length)];
+    window.location.href = pick.href;
+  });
+}
+        "#)) }
     }
 }
 
@@ -762,6 +859,13 @@ pub fn recipe_page(recipe: &RecipeDetail) -> Markup {
             (rendered_content)
         }
 
+        @if let Some(image_cid) = &recipe.image_cid {
+            img src=(format!("/blob/{}", image_cid))
+                alt="Recipe image"
+                class="recipe-image"
+                loading="lazy";
+        }
+
         @if !recipe.comments.is_empty() {
             div class="comments" {
                 h2 { "Comments (" (recipe.comments.len()) ")" }
@@ -770,6 +874,71 @@ pub fn recipe_page(recipe: &RecipeDetail) -> Markup {
         }
 
         script { (PreEscaped(r#"
+(function() {
+  var timers = {};
+
+  function formatTime(s) {
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    if (h > 0) return h + 'h ' + String(m).padStart(2,'0') + 'm ' + String(sec).padStart(2,'0') + 's';
+    if (m > 0) return m + 'm ' + String(sec).padStart(2,'0') + 's';
+    return sec + 's';
+  }
+
+  function notify(label) {
+    var msg = '\u23f1 ' + label + ' timer done!';
+    if (Notification.permission === 'granted') {
+      new Notification('AtChef', { body: msg, icon: '/favicon.ico' });
+    } else {
+      alert(msg);
+    }
+  }
+
+  function startTimer(span, seconds, label) {
+    var id = span.dataset.timerId;
+    if (id && timers[id]) {
+      clearInterval(timers[id].interval);
+      span.textContent = '\u23f1 ' + label;
+      span.classList.remove('timer-running', 'timer-done');
+      delete timers[id];
+      return;
+    }
+    if (Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+    var tid = Date.now() + '_' + Math.random();
+    span.dataset.timerId = tid;
+    var remaining = seconds;
+    span.classList.add('timer-running');
+    span.classList.remove('timer-done');
+    span.textContent = '\u23f1 ' + formatTime(remaining);
+    var interval = setInterval(function() {
+      remaining--;
+      if (remaining <= 0) {
+        clearInterval(interval);
+        delete timers[tid];
+        span.textContent = '\u2705 ' + label;
+        span.classList.remove('timer-running');
+        span.classList.add('timer-done');
+        notify(label);
+      } else {
+        span.textContent = '\u23f1 ' + formatTime(remaining);
+      }
+    }, 1000);
+    timers[tid] = { interval: interval };
+  }
+
+  document.querySelectorAll('.timer[data-seconds]').forEach(function(span) {
+    var seconds = parseInt(span.getAttribute('data-seconds'), 10);
+    var label = span.textContent.replace('\u23f1 ', '').trim();
+    span.style.cursor = 'pointer';
+    span.title = 'Click to start timer';
+    span.addEventListener('click', function() { startTimer(span, seconds, label); });
+    span.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startTimer(span, seconds, label); }
+    });
+  });
+})();
+
 document.querySelectorAll('#recipe-ingredients li[data-ingredient]').forEach(function(li) {
   var key = li.getAttribute('data-ingredient');
   var spans = document.querySelectorAll('.ingredient[data-ingredient="' + key + '"]');
@@ -895,7 +1064,17 @@ document.addEventListener('DOMContentLoaded', function() {
                     div class="recipe-title" {
                         a href=(format!("/profile/{}/recipe/{}", handle, recipe.id)) { (&recipe.name) }
                     }
-                    div class="recipe-meta" { (&recipe.time_ago) }
+                    div class="recipe-meta" {
+                        (&recipe.time_ago)
+                        @if is_owner {
+                            " · "
+                            a href=(format!("/profile/{}/recipe/{}/edit", handle, recipe.id)) class="recipe-action" { "edit" }
+                            " · "
+                            form method="post" action=(format!("/profile/{}/recipe/{}/delete", handle, recipe.id)) style="display:inline;" {
+                                button type="submit" class="recipe-action recipe-action-delete" onclick="return confirm('Delete this recipe?')" { "delete" }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -927,7 +1106,7 @@ pub fn recipe_form_page(error: Option<&str>) -> Markup {
             p class="error" { (err) }
         }
 
-        form method="post" action="/recipe/new" class="recipe-form" {
+        form method="post" action="/recipe/new" class="recipe-form" enctype="multipart/form-data" {
             div class="form-group" {
                 label for="name" { "Recipe Name" }
                 input type="text" id="name" name="name" placeholder="e.g., Perfect Sourdough Bread" required;
@@ -936,6 +1115,15 @@ pub fn recipe_form_page(error: Option<&str>) -> Markup {
             div class="form-group" {
                 label for="description" { "Description" }
                 textarea id="description" name="description" rows="2" placeholder="A brief description of this recipe..." style="min-height: auto;" {}
+            }
+
+            div class="form-group" {
+                label for="recipe-image" { "Recipe Image " span class="form-note" { "(optional, max 1MB)" } }
+                input type="file" id="recipe-image" name="recipe-image" accept="image/png,image/jpeg,image/webp";
+                div id="image-preview" class="image-preview" style="display: none;" {
+                    img id="preview-img" alt="Preview";
+                    button type="button" id="remove-image" class="remove-image-btn" { "Remove" }
+                }
             }
 
             div class="form-row" {
@@ -983,9 +1171,93 @@ pub fn recipe_form_page(error: Option<&str>) -> Markup {
                 }
             }
 
+            div class="form-group" style="display:flex;align-items:center;gap:8px;" {
+                input type="checkbox" id="post_to_bluesky" name="post_to_bluesky" value="1" checked;
+                label for="post_to_bluesky" style="margin:0;font-weight:normal;" { "Also post to Bluesky" }
+            }
+
             div class="form-actions" {
                 button type="submit" class="btn-primary" { "Create Recipe" }
                 a href="/" class="btn-secondary" { "Cancel" }
+            }
+        }
+
+        script { (PreEscaped(RECIPE_FORM_JS)) }
+    }
+}
+
+pub fn edit_recipe_form_page(
+    handle: &str,
+    rkey: &str,
+    name: &str,
+    description: &str,
+    portions: u64,
+    prep_time: u64,
+    cook_time: u64,
+    content: &str,
+    error: Option<&str>,
+) -> Markup {
+    let action = format!("/profile/{}/recipe/{}/edit", handle, rkey);
+    html! {
+        h1 { "Edit Recipe" }
+
+        @if let Some(err) = error {
+            p class="error" { (err) }
+        }
+
+        form method="post" action=(action) class="recipe-form" enctype="multipart/form-data" {
+            div class="form-group" {
+                label for="name" { "Recipe Name" }
+                input type="text" id="name" name="name" value=(name) required;
+            }
+
+            div class="form-group" {
+                label for="description" { "Description" }
+                textarea id="description" name="description" rows="2" style="min-height: auto;" { (description) }
+            }
+
+            div class="form-group" {
+                label for="recipe-image" { "Recipe Image " span class="form-note" { "(optional, replaces existing)" } }
+                input type="file" id="recipe-image" name="recipe-image" accept="image/png,image/jpeg,image/webp";
+            }
+
+            div class="form-row" {
+                div class="form-group" {
+                    label for="portions" { "Servings" }
+                    input type="number" id="portions" name="portions" min="1" value=(portions) required;
+                }
+                div class="form-group" {
+                    label for="prep_time" { "Prep (min)" }
+                    input type="number" id="prep_time" name="prep_time" min="0" value=(prep_time) required;
+                }
+                div class="form-group" {
+                    label for="cook_time" { "Cook (min)" }
+                    input type="number" id="cook_time" name="cook_time" min="0" value=(cook_time) required;
+                }
+            }
+
+            div class="form-group" {
+                label { "Recipe Content" }
+                div class="editor-tabs" {
+                    button type="button" class="editor-tab active" data-tab="write" { "Write" }
+                    button type="button" class="editor-tab" data-tab="preview" { "Preview" }
+                }
+                div class="editor-panel active" data-panel="write" {
+                    textarea id="content" name="content" rows="15" required { (content) }
+                }
+                div class="editor-panel" data-panel="preview" {
+                    div class="preview-section" {
+                        div id="preview-content" class="preview-content" {
+                            p class="preview-placeholder" { "Start typing to see a preview..." }
+                        }
+                        div id="preview-ingredients" class="preview-ingredients" {}
+                    }
+                }
+            }
+
+            div class="form-actions" {
+                button type="submit" class="btn-primary" { "Save Changes" }
+                a href=(format!("/profile/{}/recipe/{}", handle, rkey)) class="btn-secondary" { "Cancel" }
             }
         }
 
@@ -1185,6 +1457,47 @@ document.addEventListener('DOMContentLoaded', function() {
 
     contentTextarea.addEventListener('input', updatePreview);
     updatePreview();
+
+    // Image upload preview functionality
+    const imageInput = document.getElementById('recipe-image');
+    const imagePreview = document.getElementById('image-preview');
+    const previewImg = document.getElementById('preview-img');
+    const removeImageBtn = document.getElementById('remove-image');
+
+    if (imageInput && imagePreview && previewImg && removeImageBtn) {
+        imageInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                // Check file size
+                const MAX_IMAGE_SIZE = 1048576; // 1MB in bytes
+                if (file.size > MAX_IMAGE_SIZE) {
+                    alert('File size must be less than 1MB');
+                    imageInput.value = '';
+                    return;
+                }
+
+                // Check file type
+                if (!file.type.match(/^image\/(png|jpeg|webp)$/)) {
+                    alert('Only PNG, JPEG, and WebP images are allowed');
+                    imageInput.value = '';
+                    return;
+                }
+
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    previewImg.src = e.target.result;
+                    imagePreview.style.display = 'inline-block';
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        removeImageBtn.addEventListener('click', function() {
+            imageInput.value = '';
+            imagePreview.style.display = 'none';
+            previewImg.src = '';
+        });
+    }
 });
 "#;
 
@@ -1197,6 +1510,22 @@ fn html_escape(s: &str) -> String {
 
 // Parse and render cooklang content.
 // Returns (rendered HTML, ingredient list (name, qty_str), equipment list).
+fn timer_quantity_to_seconds(qty: &cooklang::quantity::Quantity) -> Option<u64> {
+    let unit = qty.unit().unwrap_or("").to_lowercase();
+    let value = match qty.value() {
+        cooklang::quantity::Value::Number(n) => n.value(),
+        cooklang::quantity::Value::Range { start, .. } => start.value(),
+        cooklang::quantity::Value::Text(_) => return None,
+    };
+    let multiplier = match unit.trim() {
+        "s" | "sec" | "secs" | "second" | "seconds" => 1.0,
+        "m" | "min" | "mins" | "minute" | "minutes" => 60.0,
+        "h" | "hr" | "hrs" | "hour" | "hours" => 3600.0,
+        _ => return None,
+    };
+    Some((value * multiplier).round() as u64)
+}
+
 fn parse_and_render_cooklang(
     content: &str,
 ) -> (PreEscaped<String>, Vec<(String, String)>, Vec<String>) {
@@ -1260,8 +1589,13 @@ fn parse_and_render_cooklang(
                                     (None, Some(name)) => name.clone(),
                                     (None, None) => String::new(),
                                 };
+                                let seconds = timer.quantity.as_ref()
+                                    .and_then(|q| timer_quantity_to_seconds(q))
+                                    .map(|s| format!(" data-seconds=\"{}\"", s))
+                                    .unwrap_or_default();
                                 html.push_str(&format!(
-                                    "<span class=\"timer\">⏱ {}</span>",
+                                    "<span class=\"timer\" role=\"button\" tabindex=\"0\"{}>⏱ {}</span>",
+                                    seconds,
                                     html_escape(&display)
                                 ));
                             }
@@ -1303,6 +1637,7 @@ fn parse_and_render_cooklang(
             ingredients.push((name, qty_str));
         }
     }
+    ingredients.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
 
     for cw in &recipe.cookware {
         use cooklang::model::ComponentRelation;

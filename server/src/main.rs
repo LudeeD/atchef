@@ -4,11 +4,13 @@ use axum::{
     routing::{get, post},
 };
 use sqlx::SqlitePool;
+use std::sync::Arc;
 use tower_sessions::SessionManagerLayer;
 use tower_sessions_sqlx_store::SqliteStore;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod blob_cache;
 mod db;
 mod handlers;
 #[allow(dead_code)]
@@ -24,6 +26,7 @@ pub struct AppState {
     pub base_url: String,
     pub client_id: String,
     pub sqlite_pool: SqlitePool,
+    pub blob_cache: Arc<blob_cache::BlobCacheService>,
 }
 
 #[tokio::main]
@@ -75,19 +78,36 @@ async fn main() {
 
     let session_layer = session_layer.with_secure(secure_cookies);
 
+    // Initialize blob cache service
+    let cache_size_mb = std::env::var("BLOB_CACHE_SIZE_MB")
+        .unwrap_or_else(|_| "200".to_string())
+        .parse::<u64>()
+        .unwrap_or(200);
+    let blob_cache = Arc::new(blob_cache::BlobCacheService::new(
+        Arc::new(sqlite_pool.clone()),
+        cache_size_mb,
+    ));
+
     let state = AppState {
         http_client: reqwest::Client::new(),
         base_url,
         client_id,
         sqlite_pool,
+        blob_cache,
     };
 
-    tokio::spawn(sync::run(state.http_client.clone(), state.sqlite_pool.clone()));
+    tokio::spawn(sync::run(state.http_client.clone(), state.sqlite_pool.clone(), state.blob_cache.clone()));
 
     let app = Router::new()
         .route("/", get(handlers::home))
         .route("/profile/{handle}", get(handlers::public_profile))
         .route("/profile/{handle}/recipe/{rkey}", get(handlers::recipe))
+        .route("/profile/{handle}/recipe/{rkey}/delete", post(handlers::delete_recipe))
+        .route(
+            "/profile/{handle}/recipe/{rkey}/edit",
+            get(handlers::edit_recipe_form).post(handlers::update_recipe),
+        )
+        .route("/blob/{cid}", get(handlers::serve_blob))
         .route(
             "/recipe/new",
             get(handlers::new_recipe_form).post(handlers::create_recipe),

@@ -1,6 +1,7 @@
 use atproto_api::Agent;
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Multipart, Path, Query, State},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
     Form, Json,
 };
@@ -17,6 +18,25 @@ use crate::{AppState, db};
 
 const PENDING_AUTH_KEY: &str = "pending_auth";
 const USER_KEY: &str = "user";
+
+// Image upload configuration
+const MAX_IMAGE_SIZE_BYTES: usize = 1024 * 1024; // 1MB
+const ALLOWED_IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp"];
+
+/// Convert from our atproto_api::BlobRef to atrium_api::types::BlobRef
+fn convert_blob_ref(blob_ref: &atproto_api::BlobRef) -> anyhow::Result<atrium_api::types::BlobRef> {
+    use atrium_api::types::{BlobRef, TypedBlobRef, Blob};
+    use std::str::FromStr;
+    
+    let cid = ipld_core::cid::Cid::from_str(blob_ref.cid())
+        .map_err(|e| anyhow::anyhow!("Invalid CID: {}", e))?;
+    
+    Ok(BlobRef::Typed(TypedBlobRef::Blob(Blob {
+        r#ref: atrium_api::types::CidLink(cid),
+        mime_type: blob_ref.mime_type.clone(),
+        size: blob_ref.size as usize,
+    })))
+}
 
 async fn refresh_access_token(
     client: &reqwest::Client,
@@ -245,6 +265,7 @@ struct GetRecordValue {
     prep_time: Option<u64>,
     #[serde(rename = "cookTime")]
     cook_time: Option<u64>,
+    image: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -288,6 +309,8 @@ pub async fn recipe(
                 description: row.description,
                 prep_time: row.prep_time,
                 cook_time: row.cook_time,
+                image_cid: row.image_cid,
+                image_mime_type: row.image_mime_type,
             });
         }
 
@@ -319,6 +342,15 @@ pub async fn recipe(
             description: record.value.description.clone(),
             prep_time: record.value.prep_time.map(|v| v as u32),
             cook_time: record.value.cook_time.map(|v| v as u32),
+            image_cid: record.value.image.as_ref()
+                .and_then(|img| img.get("ref"))
+                .and_then(|r| r.get("$link"))
+                .and_then(|cid| cid.as_str())
+                .map(String::from),
+            image_mime_type: record.value.image.as_ref()
+                .and_then(|img| img.get("mimeType"))
+                .and_then(|mime| mime.as_str())
+                .map(String::from),
         };
 
         let uri = format!("at://{}/eu.atchef.recipe/{}", did, rkey);
@@ -336,6 +368,13 @@ pub async fn recipe(
             recipe_detail.description.as_deref(),
             recipe_detail.prep_time,
             recipe_detail.cook_time,
+            record.value.image.as_ref()
+                .and_then(|img| img.get("ref"))
+                .and_then(|r| r.get("$link"))
+                .and_then(|cid| cid.as_str()),
+            record.value.image.as_ref()
+                .and_then(|img| img.get("mimeType"))
+                .and_then(|mime| mime.as_str()),
         )
         .await;
 
@@ -721,14 +760,18 @@ pub async fn client_metadata(State(state): State<AppState>) -> Json<ClientMetada
     })
 }
 
-#[derive(Deserialize)]
-pub struct RecipeForm {
+// Removed RecipeForm - replaced with multipart parsing
+
+#[derive(Debug)]
+pub struct RecipeFormData {
     name: String,
     description: String,
     portions: u64,
     prep_time: u64,
     cook_time: u64,
     content: String,
+    image: Option<(Vec<u8>, String)>, // (data, mime_type)
+    post_to_bluesky: bool,
 }
 
 pub async fn new_recipe_form(session: Session) -> Response {
@@ -741,15 +784,114 @@ pub async fn new_recipe_form(session: Session) -> Response {
     }
 }
 
+async fn parse_recipe_multipart(mut multipart: Multipart) -> anyhow::Result<RecipeFormData> {
+    let mut name = String::new();
+    let mut description = String::new();
+    let mut portions: u64 = 4;
+    let mut prep_time: u64 = 15;
+    let mut cook_time: u64 = 30;
+    let mut content = String::new();
+    let mut image: Option<(Vec<u8>, String)> = None;
+    let mut post_to_bluesky = false;
+
+    while let Some(field) = multipart.next_field().await? {
+        let field_name = field.name().unwrap_or("").to_string();
+        
+        match field_name.as_str() {
+            "name" => {
+                name = field.text().await?;
+            }
+            "description" => {
+                description = field.text().await?;
+            }
+            "portions" => {
+                if let Ok(val) = field.text().await?.parse::<u64>() {
+                    portions = val;
+                }
+            }
+            "prep_time" => {
+                if let Ok(val) = field.text().await?.parse::<u64>() {
+                    prep_time = val;
+                }
+            }
+            "cook_time" => {
+                if let Ok(val) = field.text().await?.parse::<u64>() {
+                    cook_time = val;
+                }
+            }
+            "content" => {
+                content = field.text().await?;
+            }
+            "recipe-image" => {
+                if let Some(file_name) = field.file_name() {
+                    if !file_name.is_empty() {
+                        let content_type = field.content_type().unwrap_or("application/octet-stream").to_string();
+                        
+                        // Validate content type
+                        if !ALLOWED_IMAGE_TYPES.contains(&content_type.as_str()) {
+                            return Err(anyhow::anyhow!("Invalid image type. Only PNG, JPEG, and WebP are allowed"));
+                        }
+                        
+                        let data = field.bytes().await?;
+                        
+                        // Validate file size
+                        if data.len() > MAX_IMAGE_SIZE_BYTES {
+                            return Err(anyhow::anyhow!("Image file too large. Maximum size is {}MB", MAX_IMAGE_SIZE_BYTES / 1024 / 1024));
+                        }
+                        
+                        image = Some((data.to_vec(), content_type));
+                    }
+                }
+            }
+            "post_to_bluesky" => {
+                post_to_bluesky = field.text().await.map(|v| v == "1").unwrap_or(false);
+            }
+            _ => {
+                let _ = field.bytes().await;
+            }
+        }
+    }
+
+    if name.trim().is_empty() {
+        return Err(anyhow::anyhow!("Recipe name is required"));
+    }
+    if content.trim().is_empty() {
+        return Err(anyhow::anyhow!("Recipe content is required"));
+    }
+
+    Ok(RecipeFormData {
+        name: name.trim().to_string(),
+        description: description.trim().to_string(),
+        portions,
+        prep_time,
+        cook_time,
+        content: content.trim().to_string(),
+        image,
+        post_to_bluesky,
+    })
+}
+
 pub async fn create_recipe(
     State(state): State<AppState>,
     session: Session,
-    Form(form): Form<RecipeForm>,
+    multipart: Multipart,
 ) -> Response {
     let mut user = match session.get::<AuthenticatedUser>(USER_KEY).await {
         Ok(Some(user)) => user,
         _ => return Redirect::to("/login").into_response(),
     };
+
+    // Parse the multipart form data
+    let form = match parse_recipe_multipart(multipart).await {
+        Ok(form) => form,
+        Err(e) => {
+            tracing::error!("Failed to parse form data: {}", e);
+            let content = recipe_form_page(Some(&format!("Invalid form data: {}", e)));
+            return base_layout_with_user("New Recipe | AtChef", content, Some(&user.handle)).into_response();
+        }
+    };
+
+    let post_to_bluesky = form.post_to_bluesky;
 
     let result = async {
         // Check if token is expired and refresh if needed
@@ -794,22 +936,46 @@ pub async fn create_recipe(
         let agent = Agent::with_http_client(dpop_session, state.http_client.clone());
 
         let created_at = atrium_api::types::string::Datetime::now();
-        let recipe_name = form.name.clone();
+        // Already have form.name available, no need for separate variable
 
         let portions = form.portions.max(1);
         let time = (form.prep_time + form.cook_time).max(1);
         let description = if form.description.trim().is_empty() { None } else { Some(form.description.trim().to_string()) };
         let prep_time = if form.prep_time > 0 { Some(form.prep_time) } else { None };
         let cook_time = if form.cook_time > 0 { Some(form.cook_time) } else { None };
+
+        // Handle image upload if present
+        let image_blob = if let Some((image_data, mime_type)) = form.image {
+            tracing::info!("Uploading image blob, size: {} bytes, type: {}", image_data.len(), mime_type);
+            match agent.repo().upload_blob(image_data, &mime_type).await {
+                Ok(blob_ref) => {
+                    tracing::info!("Image uploaded successfully with CID: {}", blob_ref.cid());
+                    Some(blob_ref)
+                }
+                Err(e) => {
+                    tracing::error!("Failed to upload image: {}", e);
+                    return Err(anyhow::anyhow!("Failed to upload image: {}", e));
+                }
+            }
+        } else {
+            None
+        };
+
+        let converted_image = if let Some(ref blob) = image_blob {
+            Some(convert_blob_ref(blob)?)
+        } else {
+            None
+        };
+
         let record = RecordData {
-            name: form.name,
+            name: form.name.clone(),
             description,
             portions: std::num::NonZeroU64::new(portions).unwrap(),
             time: std::num::NonZeroU64::new(time).unwrap(),
             prep_time,
             cook_time,
-            content: form.content,
-            image: None,
+            content: form.content.clone(),
+            image: converted_image,
             created_at: created_at.clone(),
         };
 
@@ -818,15 +984,16 @@ pub async fn create_recipe(
             .create_record(&user.did, "eu.atchef.recipe", &record)
             .await?;
 
-        Ok::<_, anyhow::Error>((output, created_at, recipe_name, record.content, portions as u32, time as u32, record.description, record.prep_time, record.cook_time))
+        Ok::<_, anyhow::Error>((output, created_at, form.name, record.content, portions as u32, time as u32, record.description, record.prep_time, record.cook_time, image_blob))
     }
     .await;
 
     match result {
-        Ok((output, created_at, recipe_name, content, portions, time, description, prep_time, cook_time)) => {
+        Ok((output, created_at, recipe_name, content, portions, time, description, prep_time, cook_time, original_blob)) => {
             let rkey = output.uri.split('/').last().unwrap_or("").to_string();
             let uri = output.uri.clone();
 
+            // Save recipe to local database for caching
             if let Err(e) = db::save_recipe(
                 &state.sqlite_pool,
                 &uri,
@@ -841,8 +1008,20 @@ pub async fn create_recipe(
                 description.as_deref(),
                 prep_time.map(|v| v as u32),
                 cook_time.map(|v| v as u32),
+                original_blob.as_ref().map(|img| img.cid()),
+                original_blob.as_ref().map(|img| img.mime_type.as_str()),
             ).await {
-                tracing::error!("Failed to save recipe to database: {}", e);
+                tracing::error!("Failed to save recipe to local database cache: {}", e);
+                // Recipe was successfully created in AT Protocol, but local caching failed
+                // This is non-critical - the recipe will still be accessible via AT Protocol
+                // and will be cached when accessed through the recipe view
+            }
+
+            if post_to_bluesky {
+                let recipe_url = format!("{}/profile/{}/recipe/{}", state.base_url, user.handle, rkey);
+                if let Err(e) = post_recipe_to_bluesky(&user, &state, &recipe_name, &recipe_url).await {
+                    tracing::error!("Failed to post to Bluesky: {}", e);
+                }
             }
 
             Redirect::to(&format!("/profile/{}/recipe/{}", user.handle, rkey)).into_response()
@@ -851,6 +1030,246 @@ pub async fn create_recipe(
             tracing::error!("Failed to create recipe: {}", e);
             let content = recipe_form_page(Some(&format!("Failed to create recipe: {}", e)));
             base_layout_with_user("New Recipe | AtChef", content, Some(&user.handle)).into_response()
+        }
+    }
+}
+
+async fn post_recipe_to_bluesky(
+    user: &AuthenticatedUser,
+    state: &AppState,
+    recipe_name: &str,
+    recipe_url: &str,
+) -> anyhow::Result<()> {
+    let dpop_session = DpopSession::new(
+        &user.did,
+        &user.pds_url,
+        &user.access_token,
+        &user.dpop_private_key_pem,
+        user.dpop_public_jwk.clone(),
+    );
+    let agent = Agent::with_http_client(dpop_session, state.http_client.clone());
+
+    let text = format!("New recipe: {}\n\n{}", recipe_name, recipe_url);
+    let url_start = text.len() - recipe_url.len();
+    let url_end = text.len();
+
+    #[derive(Serialize)]
+    struct ByteSlice { #[serde(rename = "byteStart")] byte_start: usize, #[serde(rename = "byteEnd")] byte_end: usize }
+    #[derive(Serialize)]
+    struct LinkFeature { #[serde(rename = "$type")] t: &'static str, uri: String }
+    #[derive(Serialize)]
+    struct Facet { index: ByteSlice, features: Vec<LinkFeature> }
+    #[derive(Serialize)]
+    struct BskyPost {
+        #[serde(rename = "$type")] t: &'static str,
+        text: String,
+        facets: Vec<Facet>,
+        #[serde(rename = "createdAt")] created_at: String,
+    }
+
+    let post = BskyPost {
+        t: "app.bsky.feed.post",
+        text,
+        facets: vec![Facet {
+            index: ByteSlice { byte_start: url_start, byte_end: url_end },
+            features: vec![LinkFeature { t: "app.bsky.richtext.facet#link", uri: recipe_url.to_string() }],
+        }],
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+
+    agent.repo().create_record(&user.did, "app.bsky.feed.post", &post).await?;
+    Ok(())
+}
+
+async fn refresh_and_build_agent(
+    user: &mut AuthenticatedUser,
+    state: &AppState,
+    session: &Session,
+) -> anyhow::Result<Agent<DpopSession>> {
+    let now = chrono::Utc::now();
+    if now >= user.expires_at {
+        if let Some(refresh_token) = user.refresh_token.clone() {
+            let metadata = discovery::get_auth_server_metadata(&state.http_client, &user.pds_url).await?;
+            let tokens = refresh_access_token(
+                &state.http_client,
+                &metadata.token_endpoint,
+                &user.dpop_private_key_pem,
+                &user.dpop_public_jwk,
+                &state.client_id,
+                &refresh_token,
+            ).await?;
+            user.access_token = tokens.access_token;
+            user.refresh_token = tokens.refresh_token.or(Some(refresh_token));
+            user.expires_at = chrono::Utc::now() + chrono::Duration::seconds(tokens.expires_in as i64);
+            session.insert(USER_KEY, &*user).await
+                .map_err(|e| anyhow::anyhow!("Failed to update session: {}", e))?;
+        } else {
+            return Err(anyhow::anyhow!("Token expired and no refresh token available"));
+        }
+    }
+    let dpop_session = DpopSession::new(
+        &user.did,
+        &user.pds_url,
+        &user.access_token,
+        &user.dpop_private_key_pem,
+        user.dpop_public_jwk.clone(),
+    );
+    Ok(Agent::with_http_client(dpop_session, state.http_client.clone()))
+}
+
+pub async fn delete_recipe(
+    State(state): State<AppState>,
+    session: Session,
+    Path((handle, rkey)): Path<(String, String)>,
+) -> Response {
+    let mut user = match session.get::<AuthenticatedUser>(USER_KEY).await {
+        Ok(Some(u)) => u,
+        _ => return Redirect::to("/login").into_response(),
+    };
+    if user.handle != handle {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let result = async {
+        let agent = refresh_and_build_agent(&mut user, &state, &session).await?;
+        agent.repo().delete_record(&user.did, "eu.atchef.recipe", &rkey).await?;
+        db::delete_recipe(&state.sqlite_pool, &rkey, &user.did).await?;
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    match result {
+        Ok(_) => Redirect::to(&format!("/profile/{}", handle)).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to delete recipe: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+pub async fn edit_recipe_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path((handle, rkey)): Path<(String, String)>,
+) -> Response {
+    let user = match session.get::<AuthenticatedUser>(USER_KEY).await {
+        Ok(Some(u)) => u,
+        _ => return Redirect::to("/login").into_response(),
+    };
+    if user.handle != handle {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match db::get_recipe(&state.sqlite_pool, &handle, &rkey).await {
+        Ok(Some(row)) => {
+            let content = crate::views::edit_recipe_form_page(&handle, &rkey, &row.name, &row.description.unwrap_or_default(), row.portions.into(), row.prep_time.unwrap_or(0) as u64, row.cook_time.unwrap_or(0) as u64, &row.content, None);
+            base_layout_with_user("Edit Recipe | AtChef", content, Some(&user.handle)).into_response()
+        }
+        _ => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+pub async fn update_recipe(
+    State(state): State<AppState>,
+    session: Session,
+    Path((handle, rkey)): Path<(String, String)>,
+    multipart: Multipart,
+) -> Response {
+    let mut user = match session.get::<AuthenticatedUser>(USER_KEY).await {
+        Ok(Some(u)) => u,
+        _ => return Redirect::to("/login").into_response(),
+    };
+    if user.handle != handle {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let form = match parse_recipe_multipart(multipart).await {
+        Ok(f) => f,
+        Err(e) => {
+            let content = crate::views::edit_recipe_form_page(&handle, &rkey, "", "", 4, 15, 30, "", Some(&format!("Invalid form data: {}", e)));
+            return base_layout_with_user("Edit Recipe | AtChef", content, Some(&user.handle)).into_response();
+        }
+    };
+    let result = async {
+        let agent = refresh_and_build_agent(&mut user, &state, &session).await?;
+
+        let portions = form.portions.max(1);
+        let time = (form.prep_time + form.cook_time).max(1);
+        let description = if form.description.trim().is_empty() { None } else { Some(form.description.trim().to_string()) };
+        let prep_time = if form.prep_time > 0 { Some(form.prep_time) } else { None };
+        let cook_time = if form.cook_time > 0 { Some(form.cook_time) } else { None };
+
+        // Fetch existing record to preserve created_at and image
+        let existing = db::get_recipe(&state.sqlite_pool, &handle, &rkey).await?
+            .ok_or_else(|| anyhow::anyhow!("Recipe not found"))?;
+
+        let image_blob = if let Some((image_data, mime_type)) = form.image {
+            let blob_ref = agent.repo().upload_blob(image_data, &mime_type).await?;
+            Some(blob_ref)
+        } else {
+            None
+        };
+        let converted_image = if let Some(ref blob) = image_blob {
+            Some(convert_blob_ref(blob)?)
+        } else {
+            // Preserve existing image if no new one uploaded
+            existing.image_cid.as_ref().and_then(|cid| {
+                let mime = existing.image_mime_type.as_deref().unwrap_or("image/jpeg");
+                use atrium_api::types::{BlobRef, TypedBlobRef, Blob};
+                use std::str::FromStr;
+                let cid_val = ipld_core::cid::Cid::from_str(cid).ok()?;
+                Some(BlobRef::Typed(TypedBlobRef::Blob(Blob {
+                    r#ref: atrium_api::types::CidLink(cid_val),
+                    mime_type: mime.to_string(),
+                    size: 0,
+                })))
+            })
+        };
+
+        let created_at = atrium_api::types::string::Datetime::new(
+            existing.created_at.with_timezone(&chrono::FixedOffset::east_opt(0).unwrap())
+        );
+
+        let record = RecordData {
+            name: form.name.clone(),
+            description,
+            portions: std::num::NonZeroU64::new(portions).unwrap(),
+            time: std::num::NonZeroU64::new(time).unwrap(),
+            prep_time,
+            cook_time,
+            content: form.content.clone(),
+            image: converted_image,
+            created_at,
+        };
+
+        agent.repo().put_record(&user.did, "eu.atchef.recipe", &rkey, &record).await?;
+
+        let uri = format!("at://{}/eu.atchef.recipe/{}", user.did, rkey);
+        let image_cid_ref = image_blob.as_ref().map(|b| b.cid());
+        let image_mime_ref = image_blob.as_ref().map(|b| b.mime_type.as_str());
+        let final_cid = image_cid_ref.as_deref().or(existing.image_cid.as_deref());
+        let final_mime = image_mime_ref.or(existing.image_mime_type.as_deref());
+        db::save_recipe(
+            &state.sqlite_pool,
+            &uri,
+            &user.did,
+            &user.handle,
+            &rkey,
+            &form.name,
+            &form.content,
+            portions as u32,
+            time as u32,
+            &existing.created_at.to_rfc3339(),
+            record.description.as_deref(),
+            record.prep_time.map(|v| v as u32),
+            record.cook_time.map(|v| v as u32),
+            final_cid,
+            final_mime,
+        ).await?;
+
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    match result {
+        Ok(_) => Redirect::to(&format!("/profile/{}/recipe/{}", handle, rkey)).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to update recipe: {}", e);
+            let content = crate::views::edit_recipe_form_page(&handle, &rkey, &form.name, &form.description, form.portions, form.prep_time, form.cook_time, &form.content, Some(&format!("Failed to update recipe: {}", e)));
+            base_layout_with_user("Edit Recipe | AtChef", content, Some(&user.handle)).into_response()
         }
     }
 }
@@ -869,4 +1288,169 @@ pub async fn chefs(State(state): State<AppState>, session: Session) -> Markup {
     let user_handle = user.map(|u| u.handle);
     let content = crate::views::chefs_page(&users);
     base_layout_with_user("Chefs | AtChef", content, user_handle.as_deref())
+}
+
+pub async fn serve_blob(
+    Path(cid): Path<String>,
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    // Try to get blob from cache first
+    match state.blob_cache.get(&cid).await {
+        Ok(Some(cached_blob)) => {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::CONTENT_TYPE,
+                cached_blob.mime_type.parse().unwrap_or_else(|_| "application/octet-stream".parse().unwrap()),
+            );
+            headers.insert(
+                header::CONTENT_LENGTH,
+                cached_blob.size.to_string().parse().unwrap(),
+            );
+            headers.insert(
+                header::CACHE_CONTROL,
+                "public, max-age=31536000, immutable".parse().unwrap(), // 1 year cache
+            );
+            headers.insert(
+                header::ETAG,
+                format!(r#""{}""#, cid).parse().unwrap(),
+            );
+            Ok((headers, cached_blob.data))
+        }
+        Ok(None) => {
+            // Cache miss - need to fetch from PDS and cache it
+            match fetch_and_cache_blob(&cid, &state).await {
+                Ok(Some(blob_data)) => {
+                    let mut headers = HeaderMap::new();
+                    headers.insert(
+                        header::CONTENT_TYPE,
+                        blob_data.1.parse().unwrap_or_else(|_| "application/octet-stream".parse().unwrap()),
+                    );
+                    headers.insert(
+                        header::CONTENT_LENGTH,
+                        blob_data.0.len().to_string().parse().unwrap(),
+                    );
+                    headers.insert(
+                        header::CACHE_CONTROL,
+                        "public, max-age=31536000, immutable".parse().unwrap(),
+                    );
+                    headers.insert(
+                        header::ETAG,
+                        format!(r#""{}""#, cid).parse().unwrap(),
+                    );
+                    Ok((headers, blob_data.0))
+                }
+                Ok(None) => Err(StatusCode::NOT_FOUND),
+                Err(e) => {
+                    tracing::error!("Failed to fetch blob {}: {}", cid, e);
+                    Err(StatusCode::INTERNAL_SERVER_ERROR)
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!("Blob cache error for {}: {}", cid, e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn fetch_and_cache_blob(
+    cid: &str,
+    state: &AppState,
+) -> anyhow::Result<Option<(Vec<u8>, String)>> {
+    // First, try to find which author_did has a recipe with this image_cid
+    let author_did: Option<String> = sqlx::query_scalar(
+        "SELECT author_did FROM recipes WHERE image_cid = ? LIMIT 1"
+    )
+    .bind(cid)
+    .fetch_optional(&state.sqlite_pool)
+    .await?;
+
+    let Some(did) = author_did else {
+        tracing::debug!("No recipe found with image CID: {}", cid);
+        return Ok(None);
+    };
+
+    // Extract PDS host from DID - AT Protocol DIDs typically follow format: did:plc:xxxxx
+    // We need to resolve the DID to get the PDS URL
+    let pds_url = resolve_pds_for_did(&did, &state.http_client).await?;
+    
+    // Fetch blob from the PDS
+    let blob_url = format!("{}/xrpc/com.atproto.sync.getBlob?did={}&cid={}", 
+        pds_url, 
+        urlencoding::encode(&did), 
+        urlencoding::encode(cid)
+    );
+
+    tracing::debug!("Fetching blob from: {}", blob_url);
+    
+    match state.http_client.get(&blob_url).send().await {
+        Ok(response) if response.status().is_success() => {
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .and_then(|ct| ct.to_str().ok())
+                .unwrap_or("application/octet-stream")
+                .to_string();
+                
+            let data = response.bytes().await?;
+            
+            // Cache the blob for future requests
+            if let Err(e) = state.blob_cache.store(cid, data.to_vec(), &content_type).await {
+                tracing::warn!("Failed to cache blob {}: {}", cid, e);
+            } else {
+                tracing::debug!("Successfully cached blob: {}", cid);
+            }
+            
+            Ok(Some((data.to_vec(), content_type)))
+        }
+        Ok(response) => {
+            tracing::warn!("Failed to fetch blob {} from {}: HTTP {}", cid, pds_url, response.status());
+            Ok(None)
+        }
+        Err(e) => {
+            tracing::warn!("Error fetching blob {} from {}: {}", cid, pds_url, e);
+            Ok(None)
+        }
+    }
+}
+
+/// Resolve a DID to find its PDS (Personal Data Server) URL
+async fn resolve_pds_for_did(did: &str, client: &reqwest::Client) -> anyhow::Result<String> {
+    // For did:plc: DIDs, resolve via the PLC directory
+    if did.starts_with("did:plc:") {
+        let plc_url = format!("https://plc.directory/{}", did);
+        
+        match client.get(&plc_url).send().await {
+            Ok(response) if response.status().is_success() => {
+                if let Ok(doc) = response.json::<serde_json::Value>().await {
+                    // Look for PDS service endpoint in the DID document
+                    if let Some(services) = doc.get("service").and_then(|s| s.as_array()) {
+                        for service in services {
+                            if let (Some(service_type), Some(endpoint)) = (
+                                service.get("type").and_then(|t| t.as_str()),
+                                service.get("serviceEndpoint").and_then(|e| e.as_str())
+                            ) {
+                                if service_type == "AtprotoPersonalDataServer" {
+                                    return Ok(endpoint.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    // For did:web: DIDs, extract hostname directly
+    if did.starts_with("did:web:") {
+        let hostname = did.strip_prefix("did:web:").unwrap_or("");
+        return Ok(format!("https://{}", hostname));
+    }
+    
+    // Fallback to common PDS instances
+    tracing::debug!("Could not resolve PDS for DID {}, trying common instances", did);
+    
+    // Try bsky.social first as it's the most common
+    Ok("https://bsky.social".to_string())
 }
