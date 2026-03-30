@@ -749,7 +749,7 @@ pub fn recipe_list(recipes: &[Recipe], user: Option<&crate::oauth::Authenticated
                     }
                     div style="display: flex; gap: 10px;" {
                         a href="/recipe/new" class="create-recipe-btn" { "+ New Recipe" }
-                        button id="random-recipe-btn" class="create-recipe-btn" style="background:var(--color-surface);color:var(--color-text-primary);border:1px solid var(--color-border-subtle);" { "🎲 Random" }
+                        button id="random-recipe-btn" class="create-recipe-btn" style="background:var(--color-surface);color:var(--color-text-primary);border:1px solid var(--color-border-subtle);cursor:pointer;" { "Random Recipe" }
                     }
                 }
             }
@@ -1647,4 +1647,70 @@ fn parse_and_render_cooklang(
     }
 
     (PreEscaped(html), ingredients, equipment)
+}
+
+// ── Admin views ───────────────────────────────────────────────────────────────
+
+pub fn admin_login_page(error: Option<&str>) -> Markup {
+    html! {
+        h1 { "Admin" }
+        @if let Some(err) = error {
+            p class="error" { (err) }
+        }
+        form method="post" action="/admin" class="login-form" {
+            input type="password" name="token" placeholder="Admin token" required autofocus;
+            button type="submit" { "Sign in" }
+        }
+    }
+}
+
+pub fn admin_dashboard_page(recipe_count: i64, blob_count: i64) -> Markup {
+    html! {
+        h1 { "Admin" }
+        div class="recipe-meta" style="margin-bottom:24px;" {
+            (recipe_count) " cached recipes · " (blob_count) " cached blobs"
+        }
+        div style="display:flex;flex-direction:column;gap:16px;" {
+            div class="welcome-card" {
+                h2 style="margin-top:0;" { "Clean stale recipes" }
+                p { "Remove recipes from the local cache that no longer exist on the AT Protocol PDS." }
+                form method="post" action="/admin/cleanup" {
+                    button type="submit" class="btn-primary" { "Run cleanup" }
+                }
+            }
+            div class="welcome-card" {
+                h2 style="margin-top:0;" { "Fix stale image cache" }
+                p { "Remove cached recipe entries where the image MIME type is set but the CID is missing (leftover from before image support was added). They will be re-fetched from the PDS on next view." }
+                form method="post" action="/admin/fix-image-cache" {
+                    button type="submit" class="btn-primary" { "Fix image cache" }
+                }
+            }
+        }
+    }
+}
+
+pub fn admin_cleanup_result_page(authors: usize, deleted: usize, errors: &[String]) -> Markup {
+    html! {
+        h1 { "Cleanup result" }
+        p {
+            "Checked " strong { (authors) } " authors. Deleted " strong { (deleted) } " stale recipes."
+        }
+        @if !errors.is_empty() {
+            h2 { "Errors" }
+            ul {
+                @for err in errors {
+                    li class="error" { (err) }
+                }
+            }
+        }
+        a href="/admin" { "← Back to admin" }
+    }
+}
+
+pub fn admin_simple_result_page(title: &str, message: &str) -> Markup {
+    html! {
+        h1 { (title) }
+        p { (message) }
+        a href="/admin" { "← Back to admin" }
+    }
 }

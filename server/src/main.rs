@@ -27,6 +27,7 @@ pub struct AppState {
     pub client_id: String,
     pub sqlite_pool: SqlitePool,
     pub blob_cache: Arc<blob_cache::BlobCacheService>,
+    pub admin_token: Option<String>,
 }
 
 #[tokio::main]
@@ -88,12 +89,18 @@ async fn main() {
         cache_size_mb,
     ));
 
+    let admin_token = std::env::var("ADMIN_TOKEN").ok();
+    if admin_token.is_none() {
+        info!("ADMIN_TOKEN not set — admin routes disabled");
+    }
+
     let state = AppState {
         http_client: reqwest::Client::new(),
         base_url,
         client_id,
         sqlite_pool,
         blob_cache,
+        admin_token,
     };
 
     tokio::spawn(sync::run(state.http_client.clone(), state.sqlite_pool.clone(), state.blob_cache.clone()));
@@ -120,6 +127,9 @@ async fn main() {
         .route("/logout", post(handlers::logout))
         .route("/profile", get(handlers::profile))
         .route("/chefs", get(handlers::chefs))
+        .route("/admin", get(handlers::admin_page).post(handlers::admin_login))
+        .route("/admin/cleanup", post(handlers::admin_cleanup))
+        .route("/admin/fix-image-cache", post(handlers::admin_fix_image_cache))
         .route("/client-metadata.json", get(handlers::client_metadata))
         .route(
             "/.well-known/oauth-client-metadata",

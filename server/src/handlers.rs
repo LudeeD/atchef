@@ -1454,3 +1454,179 @@ async fn resolve_pds_for_did(did: &str, client: &reqwest::Client) -> anyhow::Res
     // Try bsky.social first as it's the most common
     Ok("https://bsky.social".to_string())
 }
+
+// ── Admin ────────────────────────────────────────────────────────────────────
+
+const ADMIN_SESSION_KEY: &str = "admin_authed";
+
+async fn is_admin_authed(session: &Session) -> bool {
+    matches!(session.get::<bool>(ADMIN_SESSION_KEY).await, Ok(Some(true)))
+}
+
+pub async fn admin_page(State(state): State<AppState>, session: Session) -> Response {
+    if state.admin_token.is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if !is_admin_authed(&session).await {
+        let content = crate::views::admin_login_page(None);
+        return base_layout("Admin | AtChef", content).into_response();
+    }
+    let recipe_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM recipes")
+        .fetch_one(&state.sqlite_pool)
+        .await
+        .unwrap_or(0);
+    let blob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blob_cache")
+        .fetch_one(&state.sqlite_pool)
+        .await
+        .unwrap_or(0);
+    let content = crate::views::admin_dashboard_page(recipe_count, blob_count);
+    base_layout("Admin | AtChef", content).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct AdminLoginForm {
+    token: String,
+}
+
+pub async fn admin_login(
+    State(state): State<AppState>,
+    session: Session,
+    Form(form): Form<AdminLoginForm>,
+) -> Response {
+    let Some(ref expected) = state.admin_token else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    // Unconditional delay — makes brute forcing infeasible
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    if form.token == *expected {
+        let _ = session.insert(ADMIN_SESSION_KEY, true).await;
+        Redirect::to("/admin").into_response()
+    } else {
+        let content = crate::views::admin_login_page(Some("Invalid token."));
+        base_layout("Admin | AtChef", content).into_response()
+    }
+}
+
+pub async fn admin_cleanup(State(state): State<AppState>, session: Session) -> Response {
+    if state.admin_token.is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if !is_admin_authed(&session).await {
+        return Redirect::to("/admin").into_response();
+    }
+
+    #[derive(sqlx::FromRow)]
+    struct AuthorRow { author_did: String, author_handle: String }
+
+    #[derive(serde::Deserialize)]
+    struct ListRecord { uri: String }
+    #[derive(serde::Deserialize)]
+    struct ListResponse { records: Vec<ListRecord> }
+
+    let authors = sqlx::query_as::<_, AuthorRow>(
+        "SELECT DISTINCT author_did, author_handle FROM recipes"
+    )
+    .fetch_all(&state.sqlite_pool)
+    .await
+    .unwrap_or_default();
+
+    let mut deleted = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+
+    for author in &authors {
+        let pds_url = match discovery::get_pds_url(&state.http_client, &author.author_did).await {
+            Ok(u) => u,
+            Err(e) => {
+                errors.push(format!("{}: failed to resolve PDS — {}", author.author_handle, e));
+                continue;
+            }
+        };
+
+        // Paginate through all recipe records on the PDS
+        let mut valid_rkeys = std::collections::HashSet::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut url = format!(
+                "{}/xrpc/com.atproto.repo.listRecords?repo={}&collection=eu.atchef.recipe&limit=100",
+                pds_url.trim_end_matches('/'),
+                urlencoding::encode(&author.author_did),
+            );
+            if let Some(ref c) = cursor {
+                url.push_str(&format!("&cursor={}", urlencoding::encode(c)));
+            }
+            match state.http_client.get(&url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    match resp.json::<ListResponse>().await {
+                        Ok(list) => {
+                            let done = list.records.len() < 100;
+                            cursor = list.records.last().map(|r| r.uri.clone());
+                            for r in list.records {
+                                if let Some(rkey) = r.uri.split('/').last() {
+                                    valid_rkeys.insert(rkey.to_string());
+                                }
+                            }
+                            if done { break; }
+                        }
+                        Err(e) => {
+                            errors.push(format!("{}: failed to parse response — {}", author.author_handle, e));
+                            break;
+                        }
+                    }
+                }
+                Ok(resp) => {
+                    errors.push(format!("{}: PDS returned {}", author.author_handle, resp.status()));
+                    break;
+                }
+                Err(e) => {
+                    errors.push(format!("{}: request failed — {}", author.author_handle, e));
+                    break;
+                }
+            }
+        }
+
+        // Find local rkeys that no longer exist on PDS
+        let local: Vec<String> = sqlx::query_scalar(
+            "SELECT rkey FROM recipes WHERE author_did = ?"
+        )
+        .bind(&author.author_did)
+        .fetch_all(&state.sqlite_pool)
+        .await
+        .unwrap_or_default();
+
+        for rkey in local {
+            if !valid_rkeys.contains(&rkey) {
+                if let Err(e) = db::delete_recipe(&state.sqlite_pool, &rkey, &author.author_did).await {
+                    errors.push(format!("failed to delete {}/{}: {}", author.author_handle, rkey, e));
+                } else {
+                    deleted += 1;
+                }
+            }
+        }
+    }
+
+    let content = crate::views::admin_cleanup_result_page(authors.len(), deleted, &errors);
+    base_layout("Admin | AtChef", content).into_response()
+}
+
+pub async fn admin_fix_image_cache(State(state): State<AppState>, session: Session) -> Response {
+    if state.admin_token.is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if !is_admin_authed(&session).await {
+        return Redirect::to("/admin").into_response();
+    }
+    let result = sqlx::query(
+        "DELETE FROM recipes WHERE image_cid IS NULL AND image_mime_type IS NOT NULL"
+    )
+    .execute(&state.sqlite_pool)
+    .await;
+
+    let content = match result {
+        Ok(r) => crate::views::admin_simple_result_page(
+            "Fix image cache",
+            &format!("Removed {} stale entries. They will be re-fetched from the PDS on next view.", r.rows_affected()),
+        ),
+        Err(e) => crate::views::admin_simple_result_page("Fix image cache", &format!("Error: {}", e)),
+    };
+    base_layout("Admin | AtChef", content).into_response()
+}
