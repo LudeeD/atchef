@@ -46,6 +46,8 @@ pub struct RecipeDetail {
     pub description: Option<String>,
     pub prep_time: Option<u32>,
     pub cook_time: Option<u32>,
+    pub image_cid: Option<String>,
+    pub image_mime_type: Option<String>,
 }
 
 #[allow(dead_code)]

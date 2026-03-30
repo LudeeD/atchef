@@ -1,11 +1,13 @@
 use std::time::Duration;
+use std::sync::Arc;
 
 use futures_util::StreamExt;
 use serde::Deserialize;
 use sqlx::SqlitePool;
 use tokio_tungstenite::connect_async;
 
-use crate::{db, oauth::discovery};
+use crate::{db, oauth::discovery, blob_cache::BlobCacheService};
+use urlencoding;
 
 #[derive(Deserialize)]
 struct JetstreamEvent {
@@ -37,18 +39,19 @@ struct RecipeRecord {
     prep_time: Option<u64>,
     #[serde(rename = "cookTime")]
     cook_time: Option<u64>,
+    image: Option<serde_json::Value>,
 }
 
-pub async fn run(client: reqwest::Client, pool: SqlitePool) {
+pub async fn run(client: reqwest::Client, pool: SqlitePool, blob_cache: Arc<BlobCacheService>) {
     loop {
-        if let Err(e) = connect_and_consume(&client, &pool).await {
+        if let Err(e) = connect_and_consume(&client, &pool, &blob_cache).await {
             tracing::error!("jetstream sync error: {e}, reconnecting in 5s...");
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
     }
 }
 
-async fn connect_and_consume(client: &reqwest::Client, pool: &SqlitePool) -> anyhow::Result<()> {
+async fn connect_and_consume(client: &reqwest::Client, pool: &SqlitePool, blob_cache: &Arc<BlobCacheService>) -> anyhow::Result<()> {
     let cursor = db::get_cursor(pool).await?;
     let url = match cursor {
         Some(c) => format!(
@@ -114,6 +117,15 @@ async fn connect_and_consume(client: &reqwest::Client, pool: &SqlitePool) -> any
                     }
                 };
                 let uri = format!("at://{}/eu.atchef.recipe/{}", event.did, commit.rkey);
+                let image_cid = record.image.as_ref()
+                    .and_then(|img| img.get("cid"))
+                    .and_then(|cid| cid.as_str())
+                    .map(String::from);
+                let image_mime_type = record.image.as_ref()
+                    .and_then(|img| img.get("mimeType"))
+                    .and_then(|mime| mime.as_str())
+                    .map(String::from);
+
                 if let Err(e) = db::save_recipe(
                     pool,
                     &uri,
@@ -128,10 +140,51 @@ async fn connect_and_consume(client: &reqwest::Client, pool: &SqlitePool) -> any
                     record.description.as_deref(),
                     record.prep_time.map(|v| v as u32),
                     record.cook_time.map(|v| v as u32),
+                    image_cid.as_deref(),
+                    image_mime_type.as_deref(),
                 )
                 .await
                 {
                     tracing::warn!("failed to save recipe {}: {e}", uri);
+                } else {
+                    // Recipe saved successfully - warm cache with image if present
+                    if let Some(cid) = image_cid {
+                        let cid = cid.clone();
+                        let blob_cache = blob_cache.clone();
+                        let client = client.clone();
+                        let event_did = event.did.clone();
+                        let mime_type = image_mime_type.unwrap_or_else(|| "image/jpeg".to_string());
+                        
+                        tokio::spawn(async move {
+                            // Check if blob is already cached
+                            if blob_cache.get(&cid).await.unwrap_or(None).is_none() {
+                                // Try to fetch the blob and cache it
+                                let pds_url = format!("https://{}", event_did); // Simplified PDS URL construction
+                                let blob_url = format!("{}/xrpc/com.atproto.sync.getBlob?did={}&cid={}", 
+                                    pds_url, 
+                                    urlencoding::encode(&event_did), 
+                                    urlencoding::encode(&cid));
+                                
+                                match client.get(&blob_url).send().await {
+                                    Ok(response) if response.status().is_success() => {
+                                        if let Ok(data) = response.bytes().await {
+                                            if let Err(e) = blob_cache.store(&cid, data.to_vec(), &mime_type).await {
+                                                tracing::warn!("Failed to cache blob {}: {}", cid, e);
+                                            } else {
+                                                tracing::debug!("Cached recipe image blob: {}", cid);
+                                            }
+                                        }
+                                    }
+                                    Ok(response) => {
+                                        tracing::debug!("Failed to fetch blob {} from {}: {}", cid, pds_url, response.status());
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!("Error fetching blob {} from {}: {}", cid, pds_url, e);
+                                    }
+                                }
+                            }
+                        });
+                    }
                 }
             }
             "delete" => {

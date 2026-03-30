@@ -26,6 +26,8 @@ pub async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
             description TEXT,
             prep_time INTEGER,
             cook_time INTEGER,
+            image_cid TEXT,
+            image_mime_type TEXT,
             PRIMARY KEY (author_did, rkey)
         )
         "#,
@@ -53,6 +55,56 @@ pub async fn init_db(pool: &SqlitePool) -> anyhow::Result<()> {
     )
     .execute(pool)
     .await?;
+
+    // Create blob cache table
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS blob_cache (
+            cid TEXT PRIMARY KEY,
+            data BLOB NOT NULL,
+            mime_type TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            access_count INTEGER DEFAULT 1
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Handle migration: add image columns to existing recipes table if they don't exist
+    let has_image_columns = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('recipes') WHERE name IN ('image_cid', 'image_mime_type')"
+    )
+    .fetch_one(pool)
+    .await? == 2; // Both columns exist
+    
+    if !has_image_columns {
+        // Check which columns exist and add the missing ones
+        let existing_columns: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM pragma_table_info('recipes') WHERE name IN ('image_cid', 'image_mime_type')"
+        )
+        .fetch_all(pool)
+        .await?;
+        
+        if !existing_columns.contains(&"image_cid".to_string()) {
+            sqlx::query("ALTER TABLE recipes ADD COLUMN image_cid TEXT")
+                .execute(pool)
+                .await?;
+        }
+        
+        if !existing_columns.contains(&"image_mime_type".to_string()) {
+            sqlx::query("ALTER TABLE recipes ADD COLUMN image_mime_type TEXT")
+                .execute(pool)
+                .await?;
+        }
+    }
+
+    // Create index for recipe images (only after columns exist)
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_recipes_image_cid ON recipes(image_cid)")
+        .execute(pool)
+        .await?;
 
     Ok(())
 }
@@ -95,11 +147,13 @@ pub async fn save_recipe(
     description: Option<&str>,
     prep_time: Option<u32>,
     cook_time: Option<u32>,
+    image_cid: Option<&str>,
+    image_mime_type: Option<&str>,
 ) -> anyhow::Result<()> {
     sqlx::query(
         r#"
-        INSERT INTO recipes (author_did, rkey, uri, author_handle, name, content, portions, time, created_at, description, prep_time, cook_time)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO recipes (author_did, rkey, uri, author_handle, name, content, portions, time, created_at, description, prep_time, cook_time, image_cid, image_mime_type)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(author_did, rkey) DO UPDATE SET
             uri = excluded.uri,
             author_handle = excluded.author_handle,
@@ -110,7 +164,9 @@ pub async fn save_recipe(
             created_at = excluded.created_at,
             description = excluded.description,
             prep_time = excluded.prep_time,
-            cook_time = excluded.cook_time
+            cook_time = excluded.cook_time,
+            image_cid = excluded.image_cid,
+            image_mime_type = excluded.image_mime_type
         "#,
     )
     .bind(author_did)
@@ -125,6 +181,8 @@ pub async fn save_recipe(
     .bind(description)
     .bind(prep_time)
     .bind(cook_time)
+    .bind(image_cid)
+    .bind(image_mime_type)
     .execute(pool)
     .await?;
 
@@ -143,6 +201,8 @@ struct SqliteRecipeDetailRow {
     description: Option<String>,
     prep_time: Option<i64>,
     cook_time: Option<i64>,
+    image_cid: Option<String>,
+    image_mime_type: Option<String>,
 }
 
 pub struct RecipeDetailRow {
@@ -156,12 +216,14 @@ pub struct RecipeDetailRow {
     pub description: Option<String>,
     pub prep_time: Option<u32>,
     pub cook_time: Option<u32>,
+    pub image_cid: Option<String>,
+    pub image_mime_type: Option<String>,
 }
 
 pub async fn get_recipe(pool: &SqlitePool, author_handle: &str, rkey: &str) -> anyhow::Result<Option<RecipeDetailRow>> {
     let row = sqlx::query_as::<_, SqliteRecipeDetailRow>(
         r#"
-        SELECT rkey, author_handle, name, content, portions, time, created_at, description, prep_time, cook_time
+        SELECT rkey, author_handle, name, content, portions, time, created_at, description, prep_time, cook_time, image_cid, image_mime_type
         FROM recipes
         WHERE author_handle = ? AND rkey = ? AND content IS NOT NULL
         "#,
@@ -184,6 +246,8 @@ pub async fn get_recipe(pool: &SqlitePool, author_handle: &str, rkey: &str) -> a
         description: r.description,
         prep_time: r.prep_time.map(|v| v as u32),
         cook_time: r.cook_time.map(|v| v as u32),
+        image_cid: r.image_cid,
+        image_mime_type: r.image_mime_type,
     }))
 }
 
